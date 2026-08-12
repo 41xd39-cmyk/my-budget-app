@@ -74,7 +74,7 @@ st.sidebar.header("⚙️ 控制面板")
 # 起始底金設定（只需設定一次，系統將自動以此為基礎滾動加總）
 initial_balance = st.sidebar.number_input(
     "帳戶起始底金 (NTD)", 
-    value=20000, 
+    value=41721, 
     step=1000, 
     help="設定開始記帳前帳戶內的初始金額，系統會自動加減歷史所有收支進行滾動累積。"
 )
