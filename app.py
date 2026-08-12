@@ -67,7 +67,7 @@ st.title("💰 個人雲端記帳與預算監控 App")
 
 # 4. 側邊欄設定
 st.sidebar.header("⚙️ 控制面板")
-current_balance = st.sidebar.number_input("目前銀行帳戶餘額 (NTD)", value=25000, step=1000)
+current_balance = st.sidebar.number_input("目前銀行帳戶餘額 (NTD)", value=41721, step=1000)
 analysis_date = st.sidebar.date_input("分析基準日期", datetime.date.today())
 
 st.sidebar.markdown("---")
