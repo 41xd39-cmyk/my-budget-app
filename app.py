@@ -233,7 +233,7 @@ with tab2:
             column_config={
                 "日期": st.column_config.DateColumn("日期", format="YYYY-MM-DD"),
                 "收支類型": st.column_config.SelectboxColumn("收支類型", options=["支出", "收入"]),
-                "金額": st.column_sum = st.column_config.NumberColumn("金額 (NTD)", min_value=0, format="$%d")
+                "金額": st.column_config.NumberColumn("金額 (NTD)", min_value=0, format="$%d")
             }
         )
         # 即時儲存編輯結果
