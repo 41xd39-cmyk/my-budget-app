@@ -1,22 +1,48 @@
 import io
-import streamlit as st
-import pandas as pd
-import datetime
+import os
+import urllib.request
 import calendar
+import datetime
+import pandas as pd
+import streamlit as st
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 
 # 1. 網頁頁面設定
 st.set_page_config(page_title="個人雲端記帳管家", page_icon="💰", layout="wide")
 
-# 設定 Matplotlib 字型
-plt.rcParams['font.sans-serif'] = ['WQY-ZenHei', 'WenQuanYi Micro Hei', 'sans-serif']
+# ----------------- 強制註冊中文字型 (解決口口口亂碼) -----------------
+font_path = "NotoSansTC-Regular.ttf"
+
+# 自動下載並向 Matplotlib 註冊 Google Noto Sans TC 中文字型
+if not os.path.exists(font_path):
+    try:
+        font_url = "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
+        urllib.request.urlretrieve(font_url, font_path)
+    except Exception:
+        pass
+
+if os.path.exists(font_path):
+    fm.fontManager.addfont(font_path)
+    plt.rcParams['font.sans-serif'] = ['Noto Sans TC', 'sans-serif']
+else:
+    # 備用：掃描 Linux 系統字型 (packages.txt)
+    for sys_font in [
+        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+        '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'
+    ]:
+        if os.path.exists(sys_font):
+            fm.fontManager.addfont(sys_font)
+            plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'sans-serif']
+            break
+
 plt.rcParams['axes.unicode_minus'] = False
+# ------------------------------------------------------------------
 
 # 生成標準範本 Excel 檔的函式
 def generate_template_excel():
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # 工作表 1：預算設定
         df_budget = pd.DataFrame({
             "分類名稱": ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"],
             "預算金額": [15000, 3000, 1000, 10000, 3000, 4000, 5000],
@@ -25,7 +51,6 @@ def generate_template_excel():
         })
         df_budget.to_excel(writer, sheet_name='預算設定', index=False)
 
-        # 工作表 2：收支紀錄
         df_trans = pd.DataFrame({
             "日期": ["2026-08-01", "2026-08-05", "2026-08-05", "2026-08-06", "2026-08-08", "2026-08-10"],
             "收支類型": ["支出", "支出", "收入", "支出", "支出", "支出"],
@@ -43,7 +68,6 @@ st.write("上傳 Excel 記帳檔案，自動分析「月初預估預算」、「
 # 2. 側邊欄設定
 st.sidebar.header("⚙️ 控制面板")
 
-# 📥 範本下載按鈕
 st.sidebar.markdown("### 1. 取得記帳範本")
 template_bytes = generate_template_excel()
 st.sidebar.download_button(
@@ -61,7 +85,6 @@ analysis_date = st.sidebar.date_input("分析基準日期", datetime.date.today(
 
 if uploaded_file is not None:
     try:
-        # 讀取 Excel 並檢查工作表名稱
         excel_file = pd.ExcelFile(uploaded_file)
         sheets = excel_file.sheet_names
         
@@ -72,7 +95,6 @@ if uploaded_file is not None:
             df_trans = pd.read_excel(uploaded_file, sheet_name="收支紀錄")
             df_trans['日期'] = pd.to_datetime(df_trans['日期'])
 
-            # 過濾當月資料
             df_month = df_trans[
                 (df_trans['日期'].dt.year == analysis_date.year) & 
                 (df_trans['日期'].dt.month == analysis_date.month)
@@ -80,7 +102,6 @@ if uploaded_file is not None:
             df_expense = df_month[df_month['收支類型'] == '支出']
             actual_spend = df_expense.groupby('分類名稱')['金額'].sum()
 
-            # 計算天數與時間進度
             _, total_days = calendar.monthrange(analysis_date.year, analysis_date.month)
             current_day = analysis_date.day
             time_progress_ratio = current_day / total_days
@@ -89,7 +110,6 @@ if uploaded_file is not None:
             total_planned_budget = df_budget['預算金額'].sum()
             total_actual_spend = actual_spend.sum()
 
-            # 月底預估與數據匯總
             projected_total = 0
             report_data = []
             pending_fixed_amount = 0
