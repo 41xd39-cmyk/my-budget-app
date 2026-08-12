@@ -36,7 +36,7 @@ else:
 plt.rcParams['axes.unicode_minus'] = False
 # ----------------------------------------------------
 
-# 2. 初始化 Session State 數據 (若無資料則建立預設)
+# 2. 初始化 Session State 數據
 if "df_budget" not in st.session_state:
     st.session_state.df_budget = pd.DataFrame({
         "分類名稱": ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"],
@@ -48,14 +48,19 @@ if "df_budget" not in st.session_state:
 if "df_trans" not in st.session_state:
     st.session_state.df_trans = pd.DataFrame({
         "日期": [
-            pd.to_datetime("2026-07-15"), pd.to_datetime("2026-07-20"), # 跨月歷史資料測試
+            pd.to_datetime("2026-07-15"), pd.to_datetime("2026-07-20"),
             pd.to_datetime("2026-08-01"), pd.to_datetime("2026-08-05"), 
+            pd.to_datetime("2026-08-05"), pd.to_datetime("2026-08-06")
+        ],
+        "實際扣款日": [
+            pd.to_datetime("2026-07-15"), pd.to_datetime("2026-08-15"), # 7月刷卡，8/15扣款範例
+            pd.to_datetime("2026-08-01"), pd.to_datetime("2026-09-05"), # 8月刷卡，9/5扣款範例
             pd.to_datetime("2026-08-05"), pd.to_datetime("2026-08-06")
         ],
         "收支類型": ["收入", "支出", "支出", "支出", "收入", "支出"],
         "分類名稱": ["薪資", "日常雜項", "飲食餐飲", "居住房租", "薪資", "飲食餐飲"],
         "金額": [0, 0, 0, 0, 0, 0],
-        "備註": ["7月薪資", "購買家電", "午餐外帶", "8月房租", "8月薪資入帳", "朋友聚餐"]
+        "備註": ["7月薪資", "刷卡購買家電(8/15扣)", "午餐外帶", "8月房租(9/5扣)", "8月薪資入帳", "朋友聚餐"]
     })
 
 # 3. 匯出 Excel 備份檔
@@ -70,13 +75,11 @@ st.title("💰 個人雲端記帳與預算監控 App")
 
 # 4. 側邊欄控制面板
 st.sidebar.header("⚙️ 控制面板")
-
-# 起始底金設定（只需設定一次，系統將自動以此為基礎滾動加總）
 initial_balance = st.sidebar.number_input(
     "帳戶起始底金 (NTD)", 
     value=41721, 
     step=1000, 
-    help="設定開始記帳前帳戶內的初始金額，系統會自動加減歷史所有收支進行滾動累積。"
+    help="設定開始記帳前帳戶內的初始金額，系統會自動根據實際扣款日進行動態累積。"
 )
 
 analysis_date = st.sidebar.date_input("分析基準日期", datetime.date.today())
@@ -99,31 +102,48 @@ with tab1:
     df_budget = st.session_state.df_budget
     df_trans = st.session_state.df_trans
     
-    # 轉換日期格式
+    # 補全實際扣款日（若有空值則以交易日期替代）
+    df_trans['實際扣款日'] = df_trans['實際扣款日'].fillna(df_trans['日期'])
+    
     df_trans['日期_dt'] = pd.to_datetime(df_trans['日期'])
+    df_trans['扣款日_dt'] = pd.to_datetime(df_trans['實際扣款日'])
     
-    # ---------------- 核心滾動邏輯運算 ----------------
-    # A. 截至「分析基準日」的全歷史累積收支
-    df_history = df_trans[df_trans['日期_dt'].dt.date <= analysis_date]
-    total_cum_income = df_history[df_history['收支類型'] == '收入']['金額'].sum()
-    total_cum_expense = df_history[df_history['收支類型'] == '支出']['金額'].sum()
+    analysis_date_dt = pd.to_datetime(analysis_date)
     
-    # 截至分析基準日的即時總餘額 (起始底金 + 歷史總收入 - 歷史總支出)
-    current_total_balance = initial_balance + total_cum_income - total_cum_expense
+    # ---------------- 核心帳戶餘額算式（依據實際扣款日） ----------------
+    # 已發生且實際扣款日 <= 分析基準日 的真實現金流
+    df_paid_history = df_trans[df_trans['扣款日_dt'].dt.date <= analysis_date]
+    total_cum_income = df_paid_history[df_paid_history['收支類型'] == '收入']['金額'].sum()
+    total_cum_paid_expense = df_paid_history[df_paid_history['收支類型'] == '支出']['金額'].sum()
+    
+    # 目前銀行帳戶實際餘額
+    current_real_balance = initial_balance + total_cum_income - total_cum_paid_expense
 
-    # B. 當選定月份專屬收支分析
-    df_month = df_trans[
+    # ---------------- 當月消費與扣款狀態分析 ----------------
+    # 消費發生在當月的紀錄
+    df_month_consumed = df_trans[
         (df_trans['日期_dt'].dt.year == analysis_date.year) & 
         (df_trans['日期_dt'].dt.month == analysis_date.month)
     ]
-    month_income = df_month[df_month['收支類型'] == '收入']['金額'].sum()
-    df_expense = df_month[df_month['收支類型'] == '支出']
-    month_expense = df_expense['金額'].sum()
-    month_net_savings = month_income - month_expense  # 當月淨結餘
+    month_income = df_month_consumed[df_month_consumed['收支類型'] == '收入']['金額'].sum()
+    df_month_expense = df_month_consumed[df_month_consumed['收支類型'] == '支出']
+    month_total_expense = df_month_expense['金額'].sum() # 當月消費總額
 
-    actual_spend = df_expense.groupby('分類名稱')['金額'].sum()
+    # 當月消費中：已扣款 vs 待扣款
+    month_paid_expense = df_month_expense[df_month_expense['扣款日_dt'].dt.date <= analysis_date]['金額'].sum()
+    month_pending_expense = df_month_expense[df_month_expense['扣款日_dt'].dt.date > analysis_date]['金額'].sum()
 
-    # C. 時間進度與預測
+    # 包含跨月刷卡消費：截至基準日「所有已消費但尚未扣款」的總金額
+    df_all_pending = df_trans[
+        (df_trans['收支類型'] == '支出') & 
+        (df_trans['日期_dt'].dt.date <= analysis_date) & 
+        (df_trans['扣款日_dt'].dt.date > analysis_date)
+    ]
+    total_unpaid_credit_card = df_all_pending['金額'].sum()
+
+    actual_spend = df_month_expense.groupby('分類名稱')['金額'].sum()
+
+    # 時間進度計算
     _, total_days = calendar.monthrange(analysis_date.year, analysis_date.month)
     current_day = analysis_date.day
     time_progress_ratio = current_day / total_days
@@ -133,7 +153,6 @@ with tab1:
 
     projected_total_expense = 0
     report_data = []
-    pending_fixed_amount = 0
 
     for _, row in df_budget.iterrows():
         cat = row['分類名稱']
@@ -145,11 +164,7 @@ with tab1:
         
         if is_fixed:
             proj = spent if spent > 0 else budget
-            if spent > 0:
-                status = "✅ 已扣款"
-            else:
-                pending_fixed_amount += budget
-                status = "⏳ 待扣款"
+            status = "✅ 已完成" if spent > 0 else "⏳ 預計本月發生"
         else:
             proj = (spent / current_day * total_days) if current_day > 0 else 0
             target_today = budget * time_progress_ratio
@@ -165,7 +180,7 @@ with tab1:
             "分類名稱": cat,
             "支出類型": "固定" if is_fixed else "變動",
             "月初預估預算": budget,
-            "目前實際花費": spent,
+            "當月消費金額": spent,
             "預算差額": diff,
             "預估月底花費": round(proj),
             "狀態": status
@@ -173,17 +188,17 @@ with tab1:
 
     df_report = pd.DataFrame(report_data)
 
-    # 頂部 4 大核心 KPI
+    # 頂部 KPI 指標
     kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-    kpi_col1.metric("💵 截至當前帳戶總餘額", f"${current_total_balance:,.0f}", help="起始底金 + 歷年歷月截至該日總收入 - 總支出")
-    kpi_col2.metric("📈 當月累積淨結餘", f"${month_net_savings:,.0f}", delta=f"收入 ${month_income:,.0f} | 支出 ${month_expense:,.0f}")
-    kpi_col3.metric("🎯 當月預估月底總花費", f"${projected_total_expense:,.0f}", delta=f"${total_planned_budget - projected_total_expense:,.0f} 預算差額")
+    kpi_col1.metric("💵 當前銀行實際餘額", f"${current_real_balance:,.0f}", help="起始底金 + 已實際扣款/入帳的淨額")
+    kpi_col2.metric("💳 當月消費總額", f"${month_total_expense:,.0f}", f"已扣 ${month_paid_expense:,.0f} | 待扣 ${month_pending_expense:,.0f}")
+    kpi_col3.metric("🚨 跨月/刷卡未扣總額", f"${total_unpaid_credit_card:,.0f}", help="包含歷史與當月已刷卡但扣款日在未來的金額")
     kpi_col4.metric("🗓️ 當月時間進度", f"{time_progress_pct}%", f"第 {current_day}/{total_days} 天")
 
     st.markdown("---")
 
     # 圖表展現
-    st.subheader(f"📊 {analysis_date.year} 年 {analysis_date.month} 月 預算 vs. 實際花費比較圖")
+    st.subheader(f"📊 {analysis_date.year} 年 {analysis_date.month} 月 預算 vs. 當月消費比較圖")
     if not df_report.empty:
         fig, ax = plt.subplots(figsize=(10, 4))
         categories = df_report['分類名稱']
@@ -192,7 +207,7 @@ with tab1:
 
         ax.bar([p - width/2 for p in x], df_report['月初預估預算'], width, label='月初預估預算', color='#e0e0e0')
         colors = ['#ea4335' if "透支" in r['狀態'] or "燒錢" in r['狀態'] else '#34a853' for _, r in df_report.iterrows()]
-        ax.bar([p + width/2 for p in x], df_report['目前實際花費'], width, label='目前實際花費', color=colors)
+        ax.bar([p + width/2 for p in x], df_report['當月消費金額'], width, label='當月消費金額', color=colors)
         ax.plot([p + width/2 for p in x], df_report['預估月底花費'], "r--o", label='預估月底總花費')
 
         ax.set_xticks(x)
@@ -205,49 +220,57 @@ with tab1:
     st.subheader("📋 詳細分類對比表")
     st.dataframe(df_report, use_container_width=True)
 
-    # 預留資金試算與自動扣除評估
-    st.subheader("🏦 銀行帳戶預留資金試算")
-    gap = pending_fixed_amount - current_total_balance
+    # 刷卡與延遲扣款試算區
+    st.subheader("🏦 信用卡與延遲扣款預留資金試算")
     
     col_bank1, col_bank2 = st.columns(2)
-    col_bank1.write(f"💳 截至基準日當前帳戶實際總餘額：**${current_total_balance:,.0f}**")
-    col_bank1.write(f"⏳ 本月剩餘待扣固定支出總額：**${pending_fixed_amount:,.0f}**")
+    col_bank1.write(f"💳 基準日當前銀行實際餘額：**${current_real_balance:,.0f}**")
+    col_bank1.write(f"⏳ 截至基準日已刷卡/消費但未扣款金額：**${total_unpaid_credit_card:,.0f}**")
     
+    gap = total_unpaid_credit_card - current_real_balance
     if gap > 0:
-        col_bank2.error(f"🚨【帳戶餘額不足】請最晚在扣款日前補入 **${gap:,.0f}**，否則預計扣款失敗！")
+        col_bank2.error(f"🚨【預留資金不足】未來需扣款金額大於當前餘額，請最晚在扣款日前補入 **${gap:,.0f}**！")
     else:
-        after_deduct = current_total_balance - pending_fixed_amount
-        col_bank2.success(f"🟢【資金充足】扣除本月剩餘待扣固定支出後，預估帳戶淨餘額為 **${after_deduct:,.0f}**。")
+        after_deduct = current_real_balance - total_unpaid_credit_card
+        col_bank2.success(f"🟢【資金充足】扣除所有已刷卡未扣款項後，預估銀行剩餘淨額為 **${after_deduct:,.0f}**。")
+
+    if not df_all_pending.empty:
+        with st.expander("🔍 點擊查看目前未扣款明細清單"):
+            st.dataframe(df_all_pending[['日期', '實際扣款日', '分類名稱', '金額', '備註']], use_container_width=True)
 
 
 # ==================== Tab 2: 線上記帳與預算編輯 ====================
 with tab2:
     st.subheader("➕ 單筆快速填寫記帳")
     
+    # 快速填寫表單
     with st.form("add_transaction_form", clear_on_submit=True):
         f_col1, f_col2, f_col3 = st.columns(3)
-        t_date = f_col1.date_input("日期", datetime.date.today())
-        t_type = f_col2.selectbox("收支類型", ["支出", "收入"])
+        t_date = f_col1.date_input("消費/交易日期", datetime.date.today())
         
+        # 實際扣款日設定（預設帶入消費日期）
+        t_pay_date = f_col2.date_input("實際扣款日期 (刷卡/延遲扣款)", datetime.date.today(), help="若為刷卡消費，請選擇預計扣款日/卡費繳款日；若無延遲扣款則保持與消費日期相同即可。")
+        t_type = f_col3.selectbox("收支類型", ["支出", "收入"])
+        
+        f_col4, f_col5, f_col6 = st.columns(3)
         category_options = list(st.session_state.df_budget['分類名稱'].unique()) + ["薪資", "副業收入", "投資理財", "其他"]
-        t_category = f_col3.selectbox("分類名稱", category_options)
-        
-        f_col4, f_col5 = st.columns(2)
-        t_amount = f_col4.number_input("金額 (NTD)", min_value=1, value=100, step=50)
-        t_note = f_col5.text_input("備註（選填）", "")
+        t_category = f_col4.selectbox("分類名稱", category_options)
+        t_amount = f_col5.number_input("金額 (NTD)", min_value=1, value=100, step=50)
+        t_note = f_col6.text_input("備註（選填）", "")
         
         submit_btn = st.form_submit_button("➕ 立即新增紀錄")
         
         if submit_btn:
             new_record = pd.DataFrame([{
                 "日期": pd.to_datetime(t_date),
+                "實際扣款日": pd.to_datetime(t_pay_date),
                 "收支類型": t_type,
                 "分類名稱": t_category,
                 "金額": t_amount,
                 "備註": t_note
             }])
             st.session_state.df_trans = pd.concat([st.session_state.df_trans, new_record], ignore_index=True)
-            st.success(f"✅ 已成功記錄：{t_date} [{t_type}] {t_category} ${t_amount:,}")
+            st.success(f"✅ 已成功記錄：{t_date} [{t_type}] {t_category} ${t_amount:,} (預計扣款日: {t_pay_date})")
             st.rerun()
 
     st.markdown("---")
@@ -255,13 +278,14 @@ with tab2:
     col_edit1, col_edit2 = st.columns([6, 4])
 
     with col_edit1:
-        st.subheader("📝 編輯所有收支紀錄 (包含跨月歷史紀錄)")
+        st.subheader("📝 編輯所有收支紀錄 (包含實際扣款日欄位)")
         edited_trans = st.data_editor(
             st.session_state.df_trans,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "日期": st.column_config.DateColumn("日期", format="YYYY-MM-DD"),
+                "日期": st.column_config.DateColumn("消費日期", format="YYYY-MM-DD"),
+                "實際扣款日": st.column_config.DateColumn("實際扣款日", format="YYYY-MM-DD"),
                 "收支類型": st.column_config.SelectboxColumn("收支類型", options=["支出", "收入"]),
                 "金額": st.column_config.NumberColumn("金額 (NTD)", min_value=0, format="$%d")
             }
