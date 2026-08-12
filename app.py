@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 st.set_page_config(page_title="個人雲端記帳管家", page_icon="💰", layout="wide")
 
 # 設定 Matplotlib 字型
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
+plt.rcParams['font.sans-serif'] = ['WQY-ZenHei', 'WenQuanYi Micro Hei', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
 # 生成標準範本 Excel 檔的函式
