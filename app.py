@@ -40,8 +40,8 @@ plt.rcParams['axes.unicode_minus'] = False
 # ----------------------------------------------------
 
 # ----------------- 安全性哈希函式 -----------------
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+def hash_text(text: str) -> str:
+    return hashlib.sha256(text.strip().encode('utf-8')).hexdigest()
 
 # ----------------- Excel 月報表匯出生成器 -----------------
 def generate_monthly_excel_report(df_report_month, df_trans_month, user_name, analysis_date):
@@ -78,7 +78,7 @@ def load_all_data():
     # 1. 使用者帳號
     ws_users = sh.worksheet("使用者帳號")
     df_users = pd.DataFrame(ws_users.get_all_records())
-    for c in ["username", "password", "name"]:
+    for c in ["username", "password", "name", "sec_question", "sec_answer"]:
         if c not in df_users.columns: df_users[c] = pd.Series(dtype=str)
 
     # 2. 預算設定
@@ -93,7 +93,7 @@ def load_all_data():
     for c in ["user_id", "日期", "實際扣款日", "收支類型", "分類名稱", "金額", "備註", "支付帳戶"]:
         if c not in df_trans.columns: df_trans[c] = pd.Series(dtype=object)
 
-    # 4. 支付帳戶 (確保欄位齊全)
+    # 4. 支付帳戶
     if "支付帳戶" in existing_sheets:
         ws_acc = sh.worksheet("支付帳戶")
         df_acc = pd.DataFrame(ws_acc.get_all_records())
@@ -105,7 +105,7 @@ def load_all_data():
     for c in ["user_id", "帳戶名稱", "帳戶類型", "起始金額"]:
         if c not in df_acc.columns: df_acc[c] = pd.Series(dtype=object)
 
-    # 5. 儲蓄目標 (確保欄位齊全)
+    # 5. 儲蓄目標
     if "儲蓄目標" in existing_sheets:
         ws_goals = sh.worksheet("儲蓄目標")
         df_goals = pd.DataFrame(ws_goals.get_all_records())
@@ -117,7 +117,7 @@ def load_all_data():
     for c in ["user_id", "目標名稱", "目標金額", "當前累積金額", "預計完成日期"]:
         if c not in df_goals.columns: df_goals[c] = pd.Series(dtype=object)
 
-    # 數據轉型與清洗
+    # 數據轉型
     if not df_budget.empty and '預算金額' in df_budget.columns:
         df_budget['預算金額'] = pd.to_numeric(df_budget['預算金額'], errors='coerce').fillna(0)
         
@@ -163,13 +163,28 @@ def save_all_data_to_gsheets(df_budget_all, df_trans_all, df_acc_all, df_goals_a
 
     st.cache_data.clear()
 
-def register_user(username, password, name):
+def register_user(username, password, name, sec_q, sec_a):
     client = get_gspread_client()
     spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
     sh = client.open_by_key(spreadsheet_id)
     ws_users = sh.worksheet("使用者帳號")
-    hashed_pass = hash_password(password)
-    ws_users.append_row([str(username), str(hashed_pass), str(name)])
+    hashed_pass = hash_text(password)
+    hashed_ans = hash_text(sec_a)
+    ws_users.append_row([str(username), str(hashed_pass), str(name), str(sec_q), str(hashed_ans)])
+    st.cache_data.clear()
+
+def update_user_password(username, new_password):
+    client = get_gspread_client()
+    spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
+    sh = client.open_by_key(spreadsheet_id)
+    ws_users = sh.worksheet("使用者帳號")
+    df_users = pd.DataFrame(ws_users.get_all_records())
+    
+    hashed_new_pass = hash_text(new_password)
+    df_users.loc[df_users['username'].astype(str) == str(username), 'password'] = hashed_new_pass
+    
+    ws_users.clear()
+    ws_users.update([df_users.columns.values.tolist()] + df_users.fillna("").values.tolist())
     st.cache_data.clear()
 
 # ----------------- 登入狀態控制 -----------------
@@ -187,7 +202,7 @@ except Exception as e:
 # 尚未登入視圖
 if not st.session_state.logged_in:
     st.title("🔐 雲端記帳管家 - 安全登入")
-    login_tab, register_tab = st.tabs(["🔑 帳號登入", "📝 註冊新帳號"])
+    login_tab, register_tab, reset_tab = st.tabs(["🔑 帳號登入", "📝 註冊新帳號", "❓ 忘記密碼"])
     
     with login_tab:
         with st.form("login_form"):
@@ -197,7 +212,7 @@ if not st.session_state.logged_in:
             
             if submit_login:
                 if not df_users_all.empty and 'username' in df_users_all.columns:
-                    hashed_input = hash_password(pass_input.strip())
+                    hashed_input = hash_text(pass_input)
                     matched_user = df_users_all[
                         (df_users_all['username'].astype(str) == user_input.strip()) & 
                         ((df_users_all['password'].astype(str) == hashed_input) | (df_users_all['password'].astype(str) == pass_input.strip()))
@@ -218,17 +233,56 @@ if not st.session_state.logged_in:
             reg_user = st.text_input("設定帳號")
             reg_pass = st.text_input("設定密碼", type="password")
             reg_name = st.text_input("您的姓名/暱稱")
+            
+            sec_questions = [
+                "您第一隻寵物的名字？",
+                "您畢業的國小名稱？",
+                "您最喜歡的一部電影？",
+                "您出生居住的城市名字？"
+            ]
+            reg_sec_q = st.selectbox("選擇安全驗證問題 (忘記密碼時驗證)", sec_questions)
+            reg_sec_a = st.text_input("安全問題答案")
+            
             submit_reg = st.form_submit_button("註冊並建立帳戶")
             
             if submit_reg:
-                if reg_user and reg_pass:
+                if reg_user and reg_pass and reg_sec_a:
                     if not df_users_all.empty and reg_user in df_users_all['username'].astype(str).values:
                         st.error("⚠️ 該帳號已被註冊，請換一個帳號！")
                     else:
-                        register_user(reg_user, reg_pass, reg_name)
-                        st.success("✅ 註冊成功！密碼已進行加密保護，請切換至「帳號登入」分頁。")
+                        register_user(reg_user, reg_pass, reg_name, reg_sec_q, reg_sec_a)
+                        st.success("✅ 註冊成功！安全驗證問題已設定，請切換至「帳號登入」分頁。")
                 else:
-                    st.warning("請填寫完整的帳號與密碼。")
+                    st.warning("請完整填寫帳號、密碼與安全問題答案。")
+
+    with reset_tab:
+        st.subheader("🔑 驗證安全問題並重設密碼")
+        reset_username = st.text_input("請輸入您的帳號", key="reset_u")
+        
+        if reset_username:
+            user_row = df_users_all[df_users_all['username'].astype(str) == reset_username.strip()]
+            if not user_row.empty:
+                saved_q = user_row.iloc[0].get('sec_question', '')
+                saved_a_hash = user_row.iloc[0].get('sec_answer', '')
+                
+                if saved_q:
+                    st.info(f"❓ **您的安全問題：** {saved_q}")
+                    with st.form("reset_pass_form"):
+                        ans_input = st.text_input("請輸入安全問題答案")
+                        new_pass = st.text_input("請設定新密碼", type="password")
+                        submit_reset = st.form_submit_button("重設密碼")
+                        
+                        if submit_reset:
+                            if hash_text(ans_input) == str(saved_a_hash):
+                                update_user_password(reset_username.strip(), new_pass)
+                                st.success("🎉 密碼已成功更新！請使用新密碼前往「帳號登入」分頁進行登入。")
+                            else:
+                                st.error("❌ 安全問題答案不正確！")
+                else:
+                    st.warning("⚠️ 該帳號為舊版本建立，未設定安全問題。請聯繫管理員。")
+            else:
+                st.error("❌ 找不到該帳號，請確認輸入是否正確。")
+
     st.stop()
 
 # ==================== 登入成功後的主介面 ====================
@@ -248,13 +302,11 @@ if col_btn2.button("🚪 登出"):
 
 st.sidebar.markdown("---")
 
-# 當前用戶資料隔離 (安全提取)
 df_user_budget = df_budget_all[df_budget_all['user_id'].astype(str) == current_user].copy()
 df_user_trans = df_trans_all[df_trans_all['user_id'].astype(str) == current_user].copy()
 df_user_acc = df_acc_all[df_acc_all['user_id'].astype(str) == current_user].copy()
 df_user_goals = df_goals_all[df_goals_all['user_id'].astype(str) == current_user].copy()
 
-# 初始化預設帳戶
 if df_user_acc.empty:
     df_user_acc = pd.DataFrame({
         "user_id": [current_user]*3,
@@ -263,7 +315,6 @@ if df_user_acc.empty:
         "起始金額": [3000, 50000, 0]
     })
 
-# 初始化預設預算
 if df_user_budget.empty:
     default_categories = ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"]
     df_user_budget = pd.DataFrame({
@@ -330,7 +381,6 @@ with tab1:
     time_progress_ratio = current_day / total_days
     time_progress_pct = round(time_progress_ratio * 100, 1)
 
-    # 頂部 4 大核心 KPI
     kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
     kpi_col1.metric("💵 當前總資產 (全帳戶)", f"${total_assets:,.0f}")
     kpi_col2.metric("💳 當月消費總額", f"${month_total_expense:,.0f}", f"已扣 ${month_paid_expense:,.0f} | 待扣 ${month_pending_expense:,.0f}")
@@ -339,7 +389,6 @@ with tab1:
 
     st.markdown("---")
 
-    # 多帳戶獨立餘額展示列
     st.subheader("💳 個別支付帳戶即時餘額")
     acc_cols = st.columns(min(max(len(account_balances), 1), 4))
     for idx, (acc_name, bal) in enumerate(account_balances.items()):
@@ -347,7 +396,6 @@ with tab1:
 
     st.markdown("---")
 
-    # 預算比對計算
     projected_total_expense = 0
     report_data = []
 
@@ -446,7 +494,6 @@ with tab1:
 
     st.markdown("---")
 
-    # 跨月歷史趨勢圖
     st.subheader("📈 跨月歷史收支與淨儲蓄趨勢圖")
     if not df_user_trans.empty:
         df_trend = df_user_trans.copy()
