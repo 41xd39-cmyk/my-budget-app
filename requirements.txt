@@ -4,3 +4,4 @@ openpyxl
 matplotlib
 gspread
 google-auth
+streamlit-authenticator
