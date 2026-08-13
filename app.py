@@ -11,12 +11,10 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # 1. 網頁頁面設定
-st.set_page_config(page_title="個人雲端記帳管家", page_icon="💰", layout="wide")
+st.set_page_config(page_title="多用戶雲端記帳管家", page_icon="💰", layout="wide")
 
-# ----------------- 中文字型載入與強制套用 (解決口口口亂碼) -----------------
+# ----------------- 中文字型自動註冊 -----------------
 font_path = "NotoSansTC-Regular.ttf"
-
-# 備用下載來源確保檔案成功取得
 if not os.path.exists(font_path) or os.path.getsize(font_path) < 100000:
     font_urls = [
         "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanstc/NotoSansTC-Regular.ttf",
@@ -35,19 +33,9 @@ if os.path.exists(font_path) and os.path.getsize(font_path) > 100000:
     fm.fontManager.addfont(font_path)
     my_font = fm.FontProperties(fname=font_path)
     plt.rcParams['font.family'] = my_font.get_name()
-else:
-    for sys_font in [
-        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
-        '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'
-    ]:
-        if os.path.exists(sys_font):
-            fm.fontManager.addfont(sys_font)
-            my_font = fm.FontProperties(fname=sys_font)
-            plt.rcParams['font.family'] = my_font.get_name()
-            break
 
 plt.rcParams['axes.unicode_minus'] = False
-# -----------------------------------------------------------------------
+# ----------------------------------------------------
 
 # ----------------- Google Sheets 串接設定 -----------------
 scopes = [
@@ -62,151 +50,163 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
 
-def load_data_from_gsheets():
+def load_all_data():
     client = get_gspread_client()
     spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
     sh = client.open_by_key(spreadsheet_id)
     
-    existing_sheets = [w.title for w in sh.worksheets()]
+    # 讀取使用者帳號表
+    ws_users = sh.worksheet("使用者帳號")
+    df_users = pd.DataFrame(ws_users.get_all_records())
     
-    # 1. 讀取或初始化「預算設定」
-    if "預算設定" in existing_sheets:
-        ws_budget = sh.worksheet("預算設定")
-        data_b = ws_budget.get_all_records()
-        if data_b:
-            df_budget = pd.DataFrame(data_b)
-        else:
-            df_budget = pd.DataFrame({
-                "分類名稱": ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"],
-                "預算金額": [11000, 1000, 500, 12000, 3000, 4000, 5000],
-                "支出類型": ["固定", "固定", "固定", "變動", "變動", "變動", "變動"],
-                "每月扣款日": [20, 20, 20, "", "", "", ""]
-            })
-            ws_budget.update([df_budget.columns.values.tolist()] + df_budget.fillna("").values.tolist())
-    else:
-        ws_budget = sh.add_worksheet(title="預算設定", rows="100", cols="20")
-        df_budget = pd.DataFrame({
-            "分類名稱": ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"],
-            "預算金額": [11000, 1000, 500, 12000, 3000, 4000, 5000],
-            "支出類型": ["固定", "固定", "固定", "變動", "變動", "變動", "變動"],
-            "每月扣款日": [20, 20, 20, "", "", "", ""]
-        })
-        ws_budget.update([df_budget.columns.values.tolist()] + df_budget.fillna("").values.tolist())
+    # 讀取預算設定
+    ws_budget = sh.worksheet("預算設定")
+    df_budget = pd.DataFrame(ws_budget.get_all_records())
+    
+    # 讀取收支紀錄
+    ws_trans = sh.worksheet("收支紀錄")
+    df_trans = pd.DataFrame(ws_trans.get_all_records())
+    
+    return df_users, df_budget, df_trans
 
-    # 2. 讀取或初始化「收支紀錄」
-    if "收支紀錄" in existing_sheets:
-        ws_trans = sh.worksheet("收支紀錄")
-        data_t = ws_trans.get_all_records()
-        df_trans = pd.DataFrame(data_t)
-        if df_trans.empty or '日期' not in df_trans.columns:
-            df_trans = pd.DataFrame({
-                "日期": ["2026-08-01", "2026-08-05", "2026-08-05", "2026-08-06"],
-                "實際扣款日": ["2026-08-01", "2026-08-05", "2026-08-05", "2026-08-06"],
-                "收支類型": ["支出", "支出", "收入", "支出"],
-                "分類名稱": ["飲食餐飲", "居住房租", "薪資", "飲食餐飲"],
-                "金額": [0, 0, 0, 0],
-                "備註": ["午餐外帶", "8月房租", "8月薪資入帳", "朋友聚餐"]
-            })
-            ws_trans.update([df_trans.columns.values.tolist()] + df_trans.fillna("").values.tolist())
-    else:
-        ws_trans = sh.add_worksheet(title="收支紀錄", rows="100", cols="20")
-        df_trans = pd.DataFrame({
-            "日期": ["2026-08-01", "2026-08-05", "2026-08-05", "2026-08-06"],
-            "實際扣款日": ["2026-08-01", "2026-08-05", "2026-08-05", "2026-08-06"],
-            "收支類型": ["支出", "支出", "收入", "支出"],
-            "分類名稱": ["飲食餐飲", "居住房租", "薪資", "飲食餐飲"],
-            "金額": [0, 0, 0, 0],
-            "備註": ["午餐外帶", "8月房租", "8月薪資入帳", "朋友聚餐"]
-        })
-        ws_trans.update([df_trans.columns.values.tolist()] + df_trans.fillna("").values.tolist())
-
-    if not df_trans.empty and '日期' in df_trans.columns:
-        df_trans['日期'] = pd.to_datetime(df_trans['日期'])
-        df_trans['實際扣款日'] = pd.to_datetime(df_trans['實際扣款日'])
-
-    return df_budget, df_trans
-
-def save_data_to_gsheets(df_budget, df_trans):
+def save_data_to_gsheets(df_budget_all, df_trans_all):
     client = get_gspread_client()
     spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
     sh = client.open_by_key(spreadsheet_id)
     
     ws_budget = sh.worksheet("預算設定")
     ws_budget.clear()
-    ws_budget.update([df_budget.columns.values.tolist()] + df_budget.fillna("").values.tolist())
+    ws_budget.update([df_budget_all.columns.values.tolist()] + df_budget_all.fillna("").values.tolist())
     
     ws_trans = sh.worksheet("收支紀錄")
     ws_trans.clear()
-    df_trans_save = df_trans.copy()
-    if not df_trans_save.empty:
+    df_trans_save = df_trans_all.copy()
+    if not df_trans_save.empty and '日期' in df_trans_save.columns:
         df_trans_save['日期'] = pd.to_datetime(df_trans_save['日期']).dt.strftime('%Y-%m-%d')
         df_trans_save['實際扣款日'] = pd.to_datetime(df_trans_save['實際扣款日']).dt.strftime('%Y-%m-%d')
     ws_trans.update([df_trans_save.columns.values.tolist()] + df_trans_save.fillna("").values.tolist())
 
-# 初始化 Session State 數據
-if "df_budget" not in st.session_state or "df_trans" not in st.session_state:
-    try:
-        df_b, df_t = load_data_from_gsheets()
-        st.session_state.df_budget = df_b
-        st.session_state.df_trans = df_t
-    except Exception as e:
-        st.error(f"❌ 串接 Google 試算表失敗：{e}")
-        st.code(traceback.format_exc())
-        st.stop()
-# ---------------------------------------------------------
+def register_user(username, password, name):
+    client = get_gspread_client()
+    spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
+    sh = client.open_by_key(spreadsheet_id)
+    ws_users = sh.worksheet("使用者帳號")
+    ws_users.append_row([str(username), str(password), str(name)])
 
-st.title("💰 個人雲端記帳與預算監控 App (雲端同步版)")
+# ----------------- 登入機制處理 -----------------
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.current_user = None
 
-# 2. 側邊欄控制面板
-st.sidebar.header("⚙️ 控制面板")
-initial_balance = st.sidebar.number_input(
-    "帳戶起始底金 (NTD)", 
-    value=41721, 
-    step=1000, 
-    help="設定開始記帳前帳戶內的初始金額。"
-)
+try:
+    df_users_all, df_budget_all, df_trans_all = load_all_data()
+except Exception as e:
+    st.error(f"❌ 讀取資料庫失敗：{e}")
+    st.stop()
+
+if not st.session_state.logged_in:
+    st.title("🔐 多用戶雲端記帳管家 - 系統登入")
+    login_tab, register_tab = st.tabs(["🔑 帳號登入", "📝 註冊新帳號"])
+    
+    with login_tab:
+        with st.form("login_form"):
+            user_input = st.text_input("帳號 (Username)")
+            pass_input = st.text_input("密碼 (Password)", type="password")
+            submit_login = st.form_submit_button("登入")
+            
+            if submit_login:
+                if not df_users_all.empty:
+                    matched_user = df_users_all[
+                        (df_users_all['username'].astype(str) == user_input.strip()) & 
+                        (df_users_all['password'].astype(str) == pass_input.strip())
+                    ]
+                    if not matched_user.empty:
+                        st.session_state.logged_in = True
+                        st.session_state.current_user = user_input.strip()
+                        st.session_state.user_name = matched_user.iloc[0]['name']
+                        st.success("登入成功！頁面轉導中...")
+                        st.rerun()
+                    else:
+                        st.error("❌ 帳號或密碼錯誤！")
+                else:
+                    st.error("❌ 系統尚未有任何使用者，請先註冊帳號。")
+
+    with register_tab:
+        with st.form("register_form"):
+            reg_user = st.text_input("設定帳號")
+            reg_pass = st.text_input("設定密碼", type="password")
+            reg_name = st.text_input("您的姓名/暱稱")
+            submit_reg = st.form_submit_button("註冊並建立預設範本")
+            
+            if submit_reg:
+                if reg_user and reg_pass:
+                    if not df_users_all.empty and reg_user in df_users_all['username'].astype(str).values:
+                        st.error("⚠️ 該帳號已被註冊，請換一個帳號！")
+                    else:
+                        register_user(reg_user, reg_pass, reg_name)
+                        st.success("✅ 註冊成功！請切換至「帳號登入」分頁進行登入。")
+                else:
+                    st.warning("請填寫完整的帳號與密碼。")
+    st.stop()
+
+# ==================== 登入成功後的主介面 ====================
+current_user = st.session_state.current_user
+
+# 側邊欄登入狀態資訊
+st.sidebar.markdown(f"👤 **目前登入者：** {st.session_state.user_name} (`{current_user}`)")
+if st.sidebar.button("🚪 登出系統"):
+    st.session_state.logged_in = False
+    st.session_state.current_user = None
+    st.rerun()
+
+st.sidebar.markdown("---")
+
+# 核心：過濾出「僅限當前登入使用者」的資料
+df_user_budget = df_budget_all[df_budget_all['user_id'].astype(str) == current_user].copy()
+df_user_trans = df_trans_all[df_trans_all['user_id'].astype(str) == current_user].copy()
+
+# 若新使用者沒有預算設定，給予預設範本
+if df_user_budget.empty:
+    df_user_budget = pd.DataFrame({
+        "user_id": [current_user]*7,
+        "分類名稱": ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"],
+        "預算金額": [11000, 1000, 500, 12000, 3000, 4000, 5000],
+        "支出類型": ["固定", "固定", "固定", "變動", "變動", "變動", "變動"],
+        "每月扣款日": [20, 20, 20, "", "", "", ""]
+    })
+
+# 側邊欄控制面板
+initial_balance = st.sidebar.number_input("帳戶起始底金 (NTD)", value=20000, step=1000)
 analysis_date = st.sidebar.date_input("分析基準日期", datetime.date.today())
 
-if st.sidebar.button("🔄 從 Google 試算表同步資料"):
-    try:
-        df_b, df_t = load_data_from_gsheets()
-        st.session_state.df_budget = df_b
-        st.session_state.df_trans = df_t
-        st.sidebar.success("已成功同步最新資料！")
-        st.rerun()
-    except Exception as e:
-        st.sidebar.error(f"同步失敗：{e}")
+st.title(f"💰 {st.session_state.user_name} 的雲端記帳管家")
 
-# 3. 主分頁切換
 tab1, tab2 = st.tabs(["📊 分析儀表板", "✍️ 線上記帳與預算編輯"])
 
 # ==================== Tab 1: 分析儀表板 ====================
 with tab1:
-    df_budget = st.session_state.df_budget
-    df_trans = st.session_state.df_trans
-    
-    if not df_trans.empty:
-        df_trans['實際扣款日'] = df_trans['實際扣款日'].fillna(df_trans['日期'])
-        df_trans['日期_dt'] = pd.to_datetime(df_trans['日期'])
-        df_trans['扣款日_dt'] = pd.to_datetime(df_trans['實際扣款日'])
+    if not df_user_trans.empty:
+        df_user_trans['實際扣款日'] = df_user_trans['實際扣款日'].fillna(df_user_trans['日期'])
+        df_user_trans['日期_dt'] = pd.to_datetime(df_user_trans['日期'])
+        df_user_trans['扣款日_dt'] = pd.to_datetime(df_user_trans['實際扣款日'])
         
-        df_paid_history = df_trans[df_trans['扣款日_dt'].dt.date <= analysis_date]
+        df_paid_history = df_user_trans[df_user_trans['扣款日_dt'].dt.date <= analysis_date]
         total_cum_income = df_paid_history[df_paid_history['收支類型'] == '收入']['金額'].sum()
         total_cum_paid_expense = df_paid_history[df_paid_history['收支類型'] == '支出']['金額'].sum()
         current_real_balance = initial_balance + total_cum_income - total_cum_paid_expense
 
-        df_month_consumed = df_trans[
-            (df_trans['日期_dt'].dt.year == analysis_date.year) & 
-            (df_trans['日期_dt'].dt.month == analysis_date.month)
+        df_month_consumed = df_user_trans[
+            (df_user_trans['日期_dt'].dt.year == analysis_date.year) & 
+            (df_user_trans['日期_dt'].dt.month == analysis_date.month)
         ]
         month_total_expense = df_month_consumed[df_month_consumed['收支類型'] == '支出']['金額'].sum()
         month_paid_expense = df_month_consumed[(df_month_consumed['收支類型'] == '支出') & (df_month_consumed['扣款日_dt'].dt.date <= analysis_date)]['金額'].sum()
         month_pending_expense = df_month_consumed[(df_month_consumed['收支類型'] == '支出') & (df_month_consumed['扣款日_dt'].dt.date > analysis_date)]['金額'].sum()
 
-        df_all_pending = df_trans[
-            (df_trans['收支類型'] == '支出') & 
-            (df_trans['日期_dt'].dt.date <= analysis_date) & 
-            (df_trans['扣款日_dt'].dt.date > analysis_date)
+        df_all_pending = df_user_trans[
+            (df_user_trans['收支類型'] == '支出') & 
+            (df_user_trans['日期_dt'].dt.date <= analysis_date) & 
+            (df_user_trans['扣款日_dt'].dt.date > analysis_date)
         ]
         total_unpaid_credit_card = df_all_pending['金額'].sum()
         actual_spend = df_month_consumed[df_month_consumed['收支類型'] == '支出'].groupby('分類名稱')['金額'].sum()
@@ -214,7 +214,6 @@ with tab1:
         current_real_balance = initial_balance
         month_total_expense = month_paid_expense = month_pending_expense = total_unpaid_credit_card = 0
         actual_spend = pd.Series()
-        df_all_pending = pd.DataFrame()
 
     _, total_days = calendar.monthrange(analysis_date.year, analysis_date.month)
     current_day = analysis_date.day
@@ -224,7 +223,7 @@ with tab1:
     projected_total_expense = 0
     report_data = []
 
-    for _, row in df_budget.iterrows():
+    for _, row in df_user_budget.iterrows():
         cat = row['分類名稱']
         budget = row['預算金額']
         is_fixed = (row['支出類型'] == '固定')
@@ -278,8 +277,6 @@ with tab1:
         ax.plot([p + width/2 for p in x], df_report['預估月底花費'], "r--o", label='預估月底總花費')
 
         ax.set_xticks(x)
-        
-        # 明確傳入 fontproperties 確保中文順利渲染
         if my_font:
             ax.set_xticklabels(categories, rotation=15, fontproperties=my_font)
             ax.set_ylabel("金額 (NTD)", fontproperties=my_font)
@@ -305,15 +302,16 @@ with tab2:
         t_type = f_col3.selectbox("收支類型", ["支出", "收入"])
         
         f_col4, f_col5, f_col6 = st.columns(3)
-        category_options = list(st.session_state.df_budget['分類名稱'].unique()) + ["薪資", "副業收入", "投資理財", "其他"]
+        category_options = list(df_user_budget['分類名稱'].unique()) + ["薪資", "副業收入", "投資理財", "其他"]
         t_category = f_col4.selectbox("分類名稱", category_options)
         t_amount = f_col5.number_input("金額 (NTD)", min_value=1, value=100, step=50)
         t_note = f_col6.text_input("備註（選填）", "")
         
-        submit_btn = st.form_submit_button("➕ 立即新增紀錄並同步至 Google 雲端")
+        submit_btn = st.form_submit_button("➕ 立即新增紀錄")
         
         if submit_btn:
             new_record = pd.DataFrame([{
+                "user_id": current_user,
                 "日期": pd.to_datetime(t_date),
                 "實際扣款日": pd.to_datetime(t_pay_date),
                 "收支類型": t_type,
@@ -321,16 +319,19 @@ with tab2:
                 "金額": t_amount,
                 "備註": t_note
             }])
-            st.session_state.df_trans = pd.concat([st.session_state.df_trans, new_record], ignore_index=True)
-            save_data_to_gsheets(st.session_state.df_budget, st.session_state.df_trans)
-            st.success(f"✅ 已成功紀錄並同步寫入 Google 試算表！")
+            
+            df_trans_updated = pd.concat([df_trans_all, new_record], ignore_index=True)
+            save_data_to_gsheets(df_budget_all, df_trans_updated)
+            st.success("✅ 已成功記錄並寫入個人專屬雲端庫！")
             st.rerun()
 
     st.markdown("---")
 
-    st.subheader("📝 編輯所有收支紀錄")
-    edited_trans = st.data_editor(
-        st.session_state.df_trans,
+    st.subheader("📝 編輯您的個人收支紀錄")
+    # 只呈現與編輯當前使用者的紀錄
+    display_cols = ["日期", "實際扣款日", "收支類型", "分類名稱", "金額", "備註"]
+    edited_user_trans = st.data_editor(
+        df_user_trans[display_cols] if not df_user_trans.empty else pd.DataFrame(columns=display_cols),
         num_rows="dynamic",
         use_container_width=True,
         column_config={
@@ -340,7 +341,12 @@ with tab2:
         }
     )
     
-    if st.button("💾 儲存表格修改至 Google 雲端"):
-        st.session_state.df_trans = edited_trans
-        save_data_to_gsheets(st.session_state.df_budget, st.session_state.df_trans)
-        st.success("✅ 表格變更已儲存至 Google 試算表！")
+    if st.button("💾 儲存個人表格修改"):
+        edited_user_trans['user_id'] = current_user
+        # 保留其他使用者的資料，僅替換當前使用者的資料
+        other_users_trans = df_trans_all[df_trans_all['user_id'].astype(str) != current_user]
+        df_trans_new_all = pd.concat([other_users_trans, edited_user_trans], ignore_index=True)
+        
+        save_data_to_gsheets(df_budget_all, df_trans_new_all)
+        st.success("✅ 個人變更已成功同步至雲端！")
+        st.rerun()
