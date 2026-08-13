@@ -13,20 +13,41 @@ from google.oauth2.service_account import Credentials
 # 1. 網頁頁面設定
 st.set_page_config(page_title="個人雲端記帳管家", page_icon="💰", layout="wide")
 
-# ----------------- 中文字型自動註冊 -----------------
+# ----------------- 中文字型載入與強制套用 (解決口口口亂碼) -----------------
 font_path = "NotoSansTC-Regular.ttf"
-if not os.path.exists(font_path):
-    try:
-        font_url = "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
-        urllib.request.urlretrieve(font_url, font_path)
-    except Exception:
-        pass
 
-if os.path.exists(font_path):
+# 備用下載來源確保檔案成功取得
+if not os.path.exists(font_path) or os.path.getsize(font_path) < 100000:
+    font_urls = [
+        "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanstc/NotoSansTC-Regular.ttf",
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
+    ]
+    for url in font_urls:
+        try:
+            urllib.request.urlretrieve(url, font_path)
+            if os.path.exists(font_path) and os.path.getsize(font_path) > 100000:
+                break
+        except Exception:
+            continue
+
+my_font = None
+if os.path.exists(font_path) and os.path.getsize(font_path) > 100000:
     fm.fontManager.addfont(font_path)
-    plt.rcParams['font.sans-serif'] = ['Noto Sans TC', 'sans-serif']
+    my_font = fm.FontProperties(fname=font_path)
+    plt.rcParams['font.family'] = my_font.get_name()
+else:
+    for sys_font in [
+        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+        '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'
+    ]:
+        if os.path.exists(sys_font):
+            fm.fontManager.addfont(sys_font)
+            my_font = fm.FontProperties(fname=sys_font)
+            plt.rcParams['font.family'] = my_font.get_name()
+            break
+
 plt.rcParams['axes.unicode_minus'] = False
-# ----------------------------------------------------
+# -----------------------------------------------------------------------
 
 # ----------------- Google Sheets 串接設定 -----------------
 scopes = [
@@ -257,9 +278,17 @@ with tab1:
         ax.plot([p + width/2 for p in x], df_report['預估月底花費'], "r--o", label='預估月底總花費')
 
         ax.set_xticks(x)
-        ax.set_xticklabels(categories, rotation=15)
-        ax.set_ylabel("金額 (NTD)")
-        ax.legend()
+        
+        # 明確傳入 fontproperties 確保中文順利渲染
+        if my_font:
+            ax.set_xticklabels(categories, rotation=15, fontproperties=my_font)
+            ax.set_ylabel("金額 (NTD)", fontproperties=my_font)
+            ax.legend(prop=my_font)
+        else:
+            ax.set_xticklabels(categories, rotation=15)
+            ax.set_ylabel("金額 (NTD)")
+            ax.legend()
+            
         st.pyplot(fig)
 
     st.subheader("📋 詳細分類對比表")
