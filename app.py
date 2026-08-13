@@ -1,3 +1,4 @@
+import io
 import os
 import urllib.request
 import calendar
@@ -42,7 +43,17 @@ plt.rcParams['axes.unicode_minus'] = False
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
-# ----------------- Google Sheets 串接設定 (含自動建表與快取) -----------------
+# ----------------- Excel 月報表匯出生成器 -----------------
+def generate_monthly_excel_report(df_report_month, df_trans_month, user_name, analysis_date):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_report_month.to_excel(writer, sheet_name='預算與實際對比', index=False)
+        if not df_trans_month.empty:
+            display_cols = [c for c in ['日期', '實際扣款日', '收支類型', '分類名稱', '金額', '支付帳戶', '備註'] if c in df_trans_month.columns]
+            df_trans_month[display_cols].to_excel(writer, sheet_name='當月收支明細', index=False)
+    return output.getvalue()
+
+# ----------------- Google Sheets 串接設定 -----------------
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -64,21 +75,17 @@ def load_all_data():
     
     existing_sheets = [w.title for w in sh.worksheets()]
     
-    # 1. 使用者帳號
     ws_users = sh.worksheet("使用者帳號")
     df_users = pd.DataFrame(ws_users.get_all_records())
     
-    # 2. 預算設定
     ws_budget = sh.worksheet("預算設定")
     df_budget = pd.DataFrame(ws_budget.get_all_records())
     
-    # 3. 收支紀錄 (相容性檢測支付帳戶欄位)
     ws_trans = sh.worksheet("收支紀錄")
     df_trans = pd.DataFrame(ws_trans.get_all_records())
     if not df_trans.empty and '支付帳戶' not in df_trans.columns:
         df_trans['支付帳戶'] = "預設銀行帳戶"
 
-    # 4. 支付帳戶 (自動建表)
     if "支付帳戶" in existing_sheets:
         ws_acc = sh.worksheet("支付帳戶")
         df_acc = pd.DataFrame(ws_acc.get_all_records())
@@ -87,7 +94,6 @@ def load_all_data():
         df_acc = pd.DataFrame(columns=["user_id", "帳戶名稱", "帳戶類型", "起始金額"])
         ws_acc.update([df_acc.columns.values.tolist()])
 
-    # 5. 儲蓄目標 (自動建表)
     if "儲蓄目標" in existing_sheets:
         ws_goals = sh.worksheet("儲蓄目標")
         df_goals = pd.DataFrame(ws_goals.get_all_records())
@@ -117,12 +123,10 @@ def save_all_data_to_gsheets(df_budget_all, df_trans_all, df_acc_all, df_goals_a
     spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
     sh = client.open_by_key(spreadsheet_id)
     
-    # 回寫預算
     ws_budget = sh.worksheet("預算設定")
     ws_budget.clear()
     ws_budget.update([df_budget_all.columns.values.tolist()] + df_budget_all.fillna("").values.tolist())
     
-    # 回寫收支
     ws_trans = sh.worksheet("收支紀錄")
     ws_trans.clear()
     df_trans_save = df_trans_all.copy()
@@ -131,12 +135,10 @@ def save_all_data_to_gsheets(df_budget_all, df_trans_all, df_acc_all, df_goals_a
         df_trans_save['實際扣款日'] = pd.to_datetime(df_trans_save['實際扣款日']).dt.strftime('%Y-%m-%d')
     ws_trans.update([df_trans_save.columns.values.tolist()] + df_trans_save.fillna("").values.tolist())
     
-    # 回寫帳戶
     ws_acc = sh.worksheet("支付帳戶")
     ws_acc.clear()
     ws_acc.update([df_acc_all.columns.values.tolist()] + df_acc_all.fillna("").values.tolist())
 
-    # 回寫目標
     ws_goals = sh.worksheet("儲蓄目標")
     ws_goals.clear()
     df_goals_save = df_goals_all.copy()
@@ -237,7 +239,7 @@ df_user_trans = df_trans_all[df_trans_all['user_id'].astype(str) == current_user
 df_user_acc = df_acc_all[df_acc_all['user_id'].astype(str) == current_user].copy()
 df_user_goals = df_goals_all[df_goals_all['user_id'].astype(str) == current_user].copy()
 
-# 初始化預設帳戶（若無）
+# 初始化預設帳戶
 if df_user_acc.empty:
     df_user_acc = pd.DataFrame({
         "user_id": [current_user]*3,
@@ -246,7 +248,7 @@ if df_user_acc.empty:
         "起始金額": [3000, 50000, 0]
     })
 
-# 初始化預設預算（若無）
+# 初始化預設預算
 if df_user_budget.empty:
     default_categories = ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"]
     df_user_budget = pd.DataFrame({
@@ -266,8 +268,6 @@ tab1, tab2, tab3 = st.tabs(["📊 分析儀表板", "✍️ 線上記帳與預�
 # ==================== Tab 1: 分析儀表板 ====================
 with tab1:
     user_accounts_list = list(df_user_acc['帳戶名稱'].unique())
-    
-    # 計算各帳戶與總資產
     account_balances = {}
     total_assets = 0
     
@@ -276,16 +276,13 @@ with tab1:
         df_user_trans['日期_dt'] = pd.to_datetime(df_user_trans['日期'])
         df_user_trans['扣款日_dt'] = pd.to_datetime(df_user_trans['實際扣款日'])
         
-        # 只算扣款日 <= 基準日的已發生交易
         df_paid = df_user_trans[df_user_trans['扣款日_dt'].dt.date <= analysis_date]
         
         for _, acc_row in df_user_acc.iterrows():
             acc_name = acc_row['帳戶名稱']
             start_val = float(acc_row['起始金額'])
-            
             acc_inc = df_paid[(df_paid['支付帳戶'] == acc_name) & (df_paid['收支類型'] == '收入')]['金額'].sum()
             acc_exp = df_paid[(df_paid['支付帳戶'] == acc_name) & (df_paid['收支類型'] == '支出')]['金額'].sum()
-            
             bal = start_val + acc_inc - acc_exp
             account_balances[acc_name] = bal
             total_assets += bal
@@ -309,6 +306,7 @@ with tab1:
         for _, acc_row in df_user_acc.iterrows():
             account_balances[acc_row['帳戶名稱']] = float(acc_row['起始金額'])
             total_assets += float(acc_row['起始金額'])
+        df_month_consumed = pd.DataFrame()
         month_total_expense = month_paid_expense = month_pending_expense = total_unpaid_credit_card = 0
         actual_spend = pd.Series()
 
@@ -334,69 +332,7 @@ with tab1:
 
     st.markdown("---")
 
-    # 週期性固定支出一鍵帶入按鈕區
-    st.subheader("⚡ 週期性固定收支快速帶入")
-    col_auto1, col_auto2 = st.columns([3, 1])
-    col_auto1.write(f"系統可根據您預算表中標記為**「固定」**的項目，自動為您帶入 **{analysis_date.year} 年 {analysis_date.month} 月** 的固定支出紀錄。")
-    
-    if col_auto2.button("⚡ 一鍵自動帶入本月固定支出"):
-        fixed_items = df_user_budget[df_user_budget['支出類型'] == '固定']
-        if not fixed_items.empty:
-            new_records = []
-            default_acc = user_accounts_list[0] if user_accounts_list else "預設帳戶"
-            
-            for _, f_row in fixed_items.iterrows():
-                try:
-                    pay_day = int(f_row['每月扣款日']) if str(f_row['每月扣款日']).isdigit() else 1
-                except Exception:
-                    pay_day = 1
-                
-                # 計算該月實際扣款日期
-                target_date = datetime.date(analysis_date.year, analysis_date.month, min(pay_day, total_days))
-                
-                new_records.append({
-                    "user_id": current_user,
-                    "日期": pd.to_datetime(target_date),
-                    "實際扣款日": pd.to_datetime(target_date),
-                    "收支類型": "支出",
-                    "分類名稱": f_row['分類名稱'],
-                    "金額": f_row['預算金額'],
-                    "備註": f"自動帶入本月固定支出 ({f_row['分類名稱']})",
-                    "支付帳戶": default_acc
-                })
-            
-            df_trans_new_all = pd.concat([df_trans_all, pd.DataFrame(new_records)], ignore_index=True)
-            save_all_data_to_gsheets(df_budget_all, df_trans_new_all, df_acc_all, df_goals_all)
-            st.success(f"✅ 已成功自動帶入 {len(new_records)} 筆固定支出！")
-            st.rerun()
-        else:
-            st.info("💡 您的預算表中目前沒有設定任何「固定」支出的項目。")
-
-    st.markdown("---")
-
-    # 儲蓄目標進度條
-    if not df_user_goals.empty:
-        st.subheader("🎯 儲蓄目標達成進度")
-        for _, g_row in df_user_goals.iterrows():
-            g_name = g_row['目標名稱']
-            target_amt = float(g_row['目標金額'])
-            curr_amt = float(g_row['當前累積金額'])
-            pct = min(curr_amt / target_amt, 1.0) if target_amt > 0 else 0
-            
-            g_col1, g_col2 = st.columns([3, 1])
-            g_col1.write(f"**{g_name}** ({g_row['預計完成日期']} 預計完成)")
-            g_col1.progress(pct, text=f"累積 ${curr_amt:,.0f} / 目標 ${target_amt:,.0f} ({round(pct*100, 1)}%)")
-            
-            gap_amt = target_amt - curr_amt
-            if gap_amt <= 0:
-                g_col2.success("🎉 已達成目標！")
-            else:
-                g_col2.info(f"還差 **${gap_amt:,.0f}**")
-
-    st.markdown("---")
-
-    # 預算 vs 消費圖表
-    st.subheader(f"📊 {analysis_date.year} 年 {analysis_date.month} 月 預算 vs. 當月消費比較圖")
+    # 預算比對計算
     projected_total_expense = 0
     report_data = []
 
@@ -433,31 +369,146 @@ with tab1:
 
     df_report = pd.DataFrame(report_data)
 
-    if not df_report.empty:
-        fig, ax = plt.subplots(figsize=(10, 4))
-        categories = df_report['分類名稱']
-        x = range(len(categories))
-        width = 0.35
+    # 匯出 Excel 月報表按鈕
+    col_rpt1, col_rpt2 = st.columns([3, 1])
+    col_rpt1.subheader(f"📊 {analysis_date.year} 年 {analysis_date.month} 月 預算 vs. 當月消費分析")
+    
+    excel_report_bytes = generate_monthly_excel_report(df_report, df_month_consumed, st.session_state.user_name, analysis_date)
+    col_rpt2.download_button(
+        label=f"📥 下載 {analysis_date.month} 月財務報表 (.xlsx)",
+        data=excel_report_bytes,
+        file_name=f"{st.session_state.user_name}_{analysis_date.year}_{analysis_date.month}_月報表.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-        ax.bar([p - width/2 for p in x], df_report['月初預估預算'], width, label='月初預估預算', color='#e0e0e0')
-        colors = ['#ea4335' if "透支" in r['狀態'] or "燒錢" in r['狀態'] else '#34a853' for _, r in df_report.iterrows()]
-        ax.bar([p + width/2 for p in x], df_report['當月消費金額'], width, label='當月消費金額', color=colors)
-        ax.plot([p + width/2 for p in x], df_report['預估月底花費'], "r--o", label='預估月底總花費')
+    # 圖表呈現：柱狀圖 (預算 vs 消費) + 圓餅圖 (消費比例)
+    chart_col1, chart_col2 = st.columns([6, 4])
+    
+    with chart_col1:
+        if not df_report.empty:
+            fig, ax = plt.subplots(figsize=(7, 4))
+            categories = df_report['分類名稱']
+            x = range(len(categories))
+            width = 0.35
 
-        ax.set_xticks(x)
-        if my_font:
-            ax.set_xticklabels(categories, rotation=15, fontproperties=my_font)
-            ax.set_ylabel("金額 (NTD)", fontproperties=my_font)
-            ax.legend(prop=my_font)
-        else:
-            ax.set_xticklabels(categories, rotation=15)
-            ax.set_ylabel("金額 (NTD)")
-            ax.legend()
+            ax.bar([p - width/2 for p in x], df_report['月初預估預算'], width, label='預算', color='#e0e0e0')
+            colors = ['#ea4335' if "透支" in r['狀態'] or "燒錢" in r['狀態'] else '#34a853' for _, r in df_report.iterrows()]
+            ax.bar([p + width/2 for p in x], df_report['當月消費金額'], width, label='實際消費', color=colors)
+
+            ax.set_xticks(x)
+            if my_font:
+                ax.set_xticklabels(categories, rotation=15, fontproperties=my_font)
+                ax.set_ylabel("金額 (NTD)", fontproperties=my_font)
+                ax.legend(prop=my_font)
+            else:
+                ax.set_xticklabels(categories, rotation=15)
+                ax.set_ylabel("金額 (NTD)")
+                ax.legend()
+            st.pyplot(fig)
+
+    with chart_col2:
+        if not df_month_consumed.empty and (df_month_consumed['收支類型'] == '支出').any():
+            spend_by_cat = df_month_consumed[df_month_consumed['收支類型'] == '支出'].groupby('分類名稱')['金額'].sum()
+            spend_by_cat = spend_by_cat[spend_by_cat > 0]
             
-        st.pyplot(fig)
+            if not spend_by_cat.empty:
+                fig_pie, ax_pie = plt.subplots(figsize=(5, 4))
+                wedges, texts, autotexts = ax_pie.pie(
+                    spend_by_cat,
+                    labels=spend_by_cat.index,
+                    autopct='%1.1f%%',
+                    startangle=140,
+                    colors=plt.cm.Set3.colors
+                )
+                if my_font:
+                    for text in texts:
+                        text.set_fontproperties(my_font)
+                    for autotext in autotexts:
+                        autotext.set_fontproperties(my_font)
+                ax_pie.set_title("🍕 當月消費類別比例", fontproperties=my_font if my_font else None)
+                st.pyplot(fig_pie)
+        else:
+            st.info("💡 當月尚無支出消費紀錄，無法產生圓餅圖。")
 
     st.subheader("📋 詳細分類對比表")
     st.dataframe(df_report, use_container_width=True)
+
+    st.markdown("---")
+
+    # 跨月歷史趨勢圖 (長程追蹤)
+    st.subheader("📈 跨月歷史收支與淨儲蓄趨勢圖")
+    if not df_user_trans.empty:
+        df_trend = df_user_trans.copy()
+        df_trend['年月'] = df_trend['日期_dt'].dt.strftime('%Y-%m')
+        
+        trend_summary = df_trend.groupby(['年月', '收支類型'])['金額'].sum().unstack(fill_value=0).reset_index()
+        if '收入' not in trend_summary.columns: trend_summary['收入'] = 0
+        if '支出' not in trend_summary.columns: trend_summary['支出'] = 0
+        
+        trend_summary['淨儲蓄'] = trend_summary['收入'] - trend_summary['支出']
+        trend_summary = trend_summary.sort_values('年月')
+
+        fig_trend, ax_trend = plt.subplots(figsize=(10, 3.5))
+        ax_trend.plot(trend_summary['年月'], trend_summary['收入'], marker='o', color='#34a853', label='總收入', linewidth=2)
+        ax_trend.plot(trend_summary['年月'], trend_summary['支出'], marker='o', color='#ea4335', label='總支出', linewidth=2)
+        ax_trend.plot(trend_summary['年月'], trend_summary['淨儲蓄'], marker='s', linestyle='--', color='#4285f4', label='淨儲蓄', linewidth=2)
+
+        ax_trend.set_ylabel("金額 (NTD)", fontproperties=my_font if my_font else None)
+        ax_trend.legend(prop=my_font if my_font else None)
+        ax_trend.grid(True, linestyle=':', alpha=0.6)
+        
+        if my_font:
+            ax_trend.set_xticklabels(trend_summary['年月'], rotation=15, fontproperties=my_font)
+        else:
+            ax_trend.set_xticklabels(trend_summary['年月'], rotation=15)
+            
+        st.pyplot(fig_trend)
+    else:
+        st.info("💡 尚無歷史記帳資料可進行跨月趨勢分析。")
+
+    st.markdown("---")
+
+    # 週期性固定支出帶入與儲蓄目標
+    col_auto, col_goal_show = st.columns(2)
+    
+    with col_auto:
+        st.subheader("⚡ 週期性固定收支快速帶入")
+        st.write(f"自動帶入預算表中標記為**「固定」**的項目至 **{analysis_date.year} 年 {analysis_date.month} 月**：")
+        if st.button("⚡ 一鍵帶入本月固定支出"):
+            fixed_items = df_user_budget[df_user_budget['支出類型'] == '固定']
+            if not fixed_items.empty:
+                new_records = []
+                default_acc = user_accounts_list[0] if user_accounts_list else "預設帳戶"
+                for _, f_row in fixed_items.iterrows():
+                    try:
+                        pay_day = int(f_row['每月扣款日']) if str(f_row['每月扣款日']).isdigit() else 1
+                    except Exception:
+                        pay_day = 1
+                    target_date = datetime.date(analysis_date.year, analysis_date.month, min(pay_day, total_days))
+                    new_records.append({
+                        "user_id": current_user,
+                        "日期": pd.to_datetime(target_date),
+                        "實際扣款日": pd.to_datetime(target_date),
+                        "收支類型": "支出",
+                        "分類名稱": f_row['分類名稱'],
+                        "金額": f_row['預算金額'],
+                        "備註": f"自動帶入本月固定支出 ({f_row['分類名稱']})",
+                        "支付帳戶": default_acc
+                    })
+                df_trans_new_all = pd.concat([df_trans_all, pd.DataFrame(new_records)], ignore_index=True)
+                save_all_data_to_gsheets(df_budget_all, df_trans_new_all, df_acc_all, df_goals_all)
+                st.success(f"✅ 已成功自動帶入 {len(new_records)} 筆固定支出！")
+                st.rerun()
+
+    with col_goal_show:
+        st.subheader("🎯 儲蓄目標進度")
+        if not df_user_goals.empty:
+            for _, g_row in df_user_goals.iterrows():
+                target_amt = float(g_row['目標金額'])
+                curr_amt = float(g_row['當前累積金額'])
+                pct = min(curr_amt / target_amt, 1.0) if target_amt > 0 else 0
+                st.write(f"**{g_row['目標名稱']}** (${curr_amt:,.0f} / ${target_amt:,.0f})")
+                st.progress(pct)
 
 # ==================== Tab 2: 線上記帳與預算編輯 ====================
 with tab2:
@@ -479,7 +530,7 @@ with tab2:
         t_account = f_col6.selectbox("支付/入帳帳戶", user_accounts_list)
         t_note = f_col7.text_input("備註（選填）", "")
         
-        submit_btn = st.form_submit_button("➕ 欄位無誤，立即新增紀錄")
+        submit_btn = st.form_submit_button("➕ 欄位無誤，獨立新增紀錄")
         
         if submit_btn:
             new_record = pd.DataFrame([{
@@ -571,7 +622,7 @@ with tab3:
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "帳戶名稱": st.column_config.TextColumn("帳戶名稱", help="如：國泰銀行、玉山信用卡、現金錢包"),
+                "帳戶名稱": st.column_config.TextColumn("帳戶名稱"),
                 "帳戶類型": st.column_config.SelectboxColumn("帳戶類型", options=["現金", "銀行帳戶", "信用卡", "電子支付"]),
                 "起始金額": st.column_config.NumberColumn("起始金額", format="$%d")
             }
@@ -583,7 +634,7 @@ with tab3:
             df_acc_new_all = pd.concat([other_users_acc, edited_user_acc], ignore_index=True)
             
             save_all_data_to_gsheets(df_budget_all, df_trans_all, df_acc_new_all, df_goals_all)
-            st.success("✅ 支付帳戶已更新！記帳表單已自動帶入新帳戶名稱。")
+            st.success("✅ 支付帳戶已更新！")
             st.rerun()
 
     with col_goal_mgr:
@@ -600,7 +651,7 @@ with tab3:
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "目標名稱": st.column_config.TextColumn("目標名稱", help="如：日本旅遊基金、緊急預備金"),
+                "目標名稱": st.column_config.TextColumn("目標名稱"),
                 "目標金額": st.column_config.NumberColumn("目標金額", min_value=0, format="$%d"),
                 "當前累積金額": st.column_config.NumberColumn("當前累積金額", min_value=0, format="$%d"),
                 "預計完成日期": st.column_config.DateColumn("預計完成日期", format="YYYY-MM-DD")
@@ -613,5 +664,5 @@ with tab3:
             df_goals_new_all = pd.concat([other_users_goals, edited_user_goals], ignore_index=True)
             
             save_all_data_to_gsheets(df_budget_all, df_trans_all, df_acc_all, df_goals_new_all)
-            st.success("✅ 儲蓄目標已更新！儀表板已同步顯示進度條。")
+            st.success("✅ 儲蓄目標已更新！")
             st.rerun()
