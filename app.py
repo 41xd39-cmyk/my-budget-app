@@ -43,12 +43,13 @@ def hash_password(password: str) -> str:
     """使用 SHA-256 加密密碼"""
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
-# ----------------- Google Sheets 串接設定 -----------------
+# ----------------- Google Sheets 串接設定 (含快取機制) -----------------
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
+@st.cache_resource
 def get_gspread_client():
     creds_dict = dict(st.secrets["gcp_service_account"])
     if "private_key" in creds_dict:
@@ -56,6 +57,8 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
 
+# 快取 5 分鐘，避免每次畫面重新渲染都呼叫 API
+@st.cache_data(ttl=300)
 def load_all_data():
     client = get_gspread_client()
     spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
@@ -70,7 +73,7 @@ def load_all_data():
     ws_trans = sh.worksheet("收支紀錄")
     df_trans = pd.DataFrame(ws_trans.get_all_records())
     
-    # 強制將數值欄位轉為數字型態，防止文字計算錯誤
+    # 強制將數值欄位轉為數字型態
     if not df_budget.empty and '預算金額' in df_budget.columns:
         df_budget['預算金額'] = pd.to_numeric(df_budget['預算金額'], errors='coerce').fillna(0)
         
@@ -95,6 +98,9 @@ def save_data_to_gsheets(df_budget_all, df_trans_all):
         df_trans_save['日期'] = pd.to_datetime(df_trans_save['日期']).dt.strftime('%Y-%m-%d')
         df_trans_save['實際扣款日'] = pd.to_datetime(df_trans_save['實際扣款日']).dt.strftime('%Y-%m-%d')
     ws_trans.update([df_trans_save.columns.values.tolist()] + df_trans_save.fillna("").values.tolist())
+    
+    # 寫入完成後主動清除讀取快取，確保下次拿到最新資料
+    st.cache_data.clear()
 
 def register_user(username, password, name):
     client = get_gspread_client()
@@ -103,6 +109,7 @@ def register_user(username, password, name):
     ws_users = sh.worksheet("使用者帳號")
     hashed_pass = hash_password(password)
     ws_users.append_row([str(username), str(hashed_pass), str(name)])
+    st.cache_data.clear()
 
 # ----------------- 登入狀態控制 -----------------
 if "logged_in" not in st.session_state:
@@ -113,6 +120,7 @@ try:
     df_users_all, df_budget_all, df_trans_all = load_all_data()
 except Exception as e:
     st.error(f"❌ 讀取資料庫失敗：{e}")
+    st.info("💡 提示：若剛剛發送過多請求觸發上限，請稍等 1 分鐘後刷新頁面即可恢復。")
     st.stop()
 
 # 尚未登入視圖
@@ -166,7 +174,13 @@ if not st.session_state.logged_in:
 current_user = st.session_state.current_user
 
 st.sidebar.markdown(f"👤 **目前登入者：** {st.session_state.user_name} (`{current_user}`)")
-if st.sidebar.button("🚪 登出系統"):
+
+col_btn1, col_btn2 = st.sidebar.columns(2)
+if col_btn1.button("🔄 刷新雲端"):
+    st.cache_data.clear()
+    st.rerun()
+
+if col_btn2.button("🚪 登出"):
     st.session_state.logged_in = False
     st.session_state.current_user = None
     st.rerun()
@@ -223,7 +237,6 @@ with tab1:
         df_all_pending = df_user_trans[
             (df_user_trans['收支類型'] == '支出') & 
             (df_user_trans['日期_dt'].dt.date <= analysis_date) & 
-            (df_trans_all['user_id'].astype(str) == current_user) &
             (df_user_trans['扣款日_dt'].dt.date > analysis_date)
         ]
         total_unpaid_credit_card = df_all_pending['金額'].sum()
