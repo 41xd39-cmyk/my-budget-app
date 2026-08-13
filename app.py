@@ -36,7 +36,6 @@ scopes = [
 
 def get_gspread_client():
     creds_dict = dict(st.secrets["gcp_service_account"])
-    # 相容換行字元處理
     if "private_key" in creds_dict:
         creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
@@ -49,7 +48,7 @@ def load_data_from_gsheets():
     
     existing_sheets = [w.title for w in sh.worksheets()]
     
-    # 1. 讀取或自動初始化「預算設定」工作表
+    # 1. 讀取或初始化「預算設定」
     if "預算設定" in existing_sheets:
         ws_budget = sh.worksheet("預算設定")
         data_b = ws_budget.get_all_records()
@@ -60,24 +59,34 @@ def load_data_from_gsheets():
                 "分類名稱": ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"],
                 "預算金額": [11000, 1000, 500, 12000, 3000, 4000, 5000],
                 "支出類型": ["固定", "固定", "固定", "變動", "變動", "變動", "變動"],
-                "每月扣款日": [20, 20, 20, None, None, None, None]
+                "每月扣款日": [20, 20, 20, "", "", "", ""]
             })
-            ws_budget.update([df_budget.columns.values.tolist()] + df_budget.values.tolist())
+            ws_budget.update([df_budget.columns.values.tolist()] + df_budget.fillna("").values.tolist())
     else:
         ws_budget = sh.add_worksheet(title="預算設定", rows="100", cols="20")
         df_budget = pd.DataFrame({
             "分類名稱": ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"],
             "預算金額": [11000, 1000, 500, 12000, 3000, 4000, 5000],
             "支出類型": ["固定", "固定", "固定", "變動", "變動", "變動", "變動"],
-            "每月扣款日": [20, 20, 20, None, None, None, None]
+            "每月扣款日": [20, 20, 20, "", "", "", ""]
         })
-        ws_budget.update([df_budget.columns.values.tolist()] + df_budget.values.tolist())
+        ws_budget.update([df_budget.columns.values.tolist()] + df_budget.fillna("").values.tolist())
 
-    # 2. 讀取或自動初始化「收支紀錄」工作表
+    # 2. 讀取或初始化「收支紀錄」
     if "收支紀錄" in existing_sheets:
         ws_trans = sh.worksheet("收支紀錄")
         data_t = ws_trans.get_all_records()
         df_trans = pd.DataFrame(data_t)
+        if df_trans.empty or '日期' not in df_trans.columns:
+            df_trans = pd.DataFrame({
+                "日期": ["2026-08-01", "2026-08-05", "2026-08-05", "2026-08-06"],
+                "實際扣款日": ["2026-08-01", "2026-08-05", "2026-08-05", "2026-08-06"],
+                "收支類型": ["支出", "支出", "收入", "支出"],
+                "分類名稱": ["飲食餐飲", "居住房租", "薪資", "飲食餐飲"],
+                "金額": [0, 0, 0, 0],
+                "備註": ["午餐外帶", "8月房租", "8月薪資入帳", "朋友聚餐"]
+            })
+            ws_trans.update([df_trans.columns.values.tolist()] + df_trans.fillna("").values.tolist())
     else:
         ws_trans = sh.add_worksheet(title="收支紀錄", rows="100", cols="20")
         df_trans = pd.DataFrame({
@@ -88,7 +97,7 @@ def load_data_from_gsheets():
             "金額": [0, 0, 0, 0],
             "備註": ["午餐外帶", "8月房租", "8月薪資入帳", "朋友聚餐"]
         })
-        ws_trans.update([df_trans.columns.values.tolist()] + df_trans.values.tolist())
+        ws_trans.update([df_trans.columns.values.tolist()] + df_trans.fillna("").values.tolist())
 
     if not df_trans.empty and '日期' in df_trans.columns:
         df_trans['日期'] = pd.to_datetime(df_trans['日期'])
@@ -103,7 +112,7 @@ def save_data_to_gsheets(df_budget, df_trans):
     
     ws_budget = sh.worksheet("預算設定")
     ws_budget.clear()
-    ws_budget.update([df_budget.columns.values.tolist()] + df_budget.values.tolist())
+    ws_budget.update([df_budget.columns.values.tolist()] + df_budget.fillna("").values.tolist())
     
     ws_trans = sh.worksheet("收支紀錄")
     ws_trans.clear()
@@ -111,7 +120,7 @@ def save_data_to_gsheets(df_budget, df_trans):
     if not df_trans_save.empty:
         df_trans_save['日期'] = pd.to_datetime(df_trans_save['日期']).dt.strftime('%Y-%m-%d')
         df_trans_save['實際扣款日'] = pd.to_datetime(df_trans_save['實際扣款日']).dt.strftime('%Y-%m-%d')
-    ws_trans.update([df_trans_save.columns.values.tolist()] + df_trans_save.values.tolist())
+    ws_trans.update([df_trans_save.columns.values.tolist()] + df_trans_save.fillna("").values.tolist())
 
 # 初始化 Session State 數據
 if "df_budget" not in st.session_state or "df_trans" not in st.session_state:
@@ -131,7 +140,7 @@ st.title("💰 個人雲端記帳與預算監控 App (雲端同步版)")
 st.sidebar.header("⚙️ 控制面板")
 initial_balance = st.sidebar.number_input(
     "帳戶起始底金 (NTD)", 
-    value=41721, 
+    value=20000, 
     step=1000, 
     help="設定開始記帳前帳戶內的初始金額。"
 )
