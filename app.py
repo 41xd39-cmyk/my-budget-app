@@ -2,6 +2,7 @@ import os
 import urllib.request
 import calendar
 import datetime
+import traceback
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -33,9 +34,11 @@ scopes = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-@st.cache_resource
 def get_gspread_client():
-    creds_dict = st.secrets["gcp_service_account"]
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    # 相容換行字元處理
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
 
@@ -44,17 +47,53 @@ def load_data_from_gsheets():
     spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
     sh = client.open_by_key(spreadsheet_id)
     
-    # 讀取 預算設定
-    ws_budget = sh.worksheet("預算設定")
-    df_budget = pd.DataFrame(ws_budget.get_all_records())
+    existing_sheets = [w.title for w in sh.worksheets()]
     
-    # 讀取 收支紀錄
-    ws_trans = sh.worksheet("收支紀錄")
-    df_trans = pd.DataFrame(ws_trans.get_all_records())
-    if not df_trans.empty:
+    # 1. 讀取或自動初始化「預算設定」工作表
+    if "預算設定" in existing_sheets:
+        ws_budget = sh.worksheet("預算設定")
+        data_b = ws_budget.get_all_records()
+        if data_b:
+            df_budget = pd.DataFrame(data_b)
+        else:
+            df_budget = pd.DataFrame({
+                "分類名稱": ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"],
+                "預算金額": [11000, 1000, 500, 12000, 3000, 4000, 5000],
+                "支出類型": ["固定", "固定", "固定", "變動", "變動", "變動", "變動"],
+                "每月扣款日": [20, 20, 20, None, None, None, None]
+            })
+            ws_budget.update([df_budget.columns.values.tolist()] + df_budget.values.tolist())
+    else:
+        ws_budget = sh.add_worksheet(title="預算設定", rows="100", cols="20")
+        df_budget = pd.DataFrame({
+            "分類名稱": ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"],
+            "預算金額": [11000, 1000, 500, 12000, 3000, 4000, 5000],
+            "支出類型": ["固定", "固定", "固定", "變動", "變動", "變動", "變動"],
+            "每月扣款日": [20, 20, 20, None, None, None, None]
+        })
+        ws_budget.update([df_budget.columns.values.tolist()] + df_budget.values.tolist())
+
+    # 2. 讀取或自動初始化「收支紀錄」工作表
+    if "收支紀錄" in existing_sheets:
+        ws_trans = sh.worksheet("收支紀錄")
+        data_t = ws_trans.get_all_records()
+        df_trans = pd.DataFrame(data_t)
+    else:
+        ws_trans = sh.add_worksheet(title="收支紀錄", rows="100", cols="20")
+        df_trans = pd.DataFrame({
+            "日期": ["2026-08-01", "2026-08-05", "2026-08-05", "2026-08-06"],
+            "實際扣款日": ["2026-08-01", "2026-08-05", "2026-08-05", "2026-08-06"],
+            "收支類型": ["支出", "支出", "收入", "支出"],
+            "分類名稱": ["飲食餐飲", "居住房租", "薪資", "飲食餐飲"],
+            "金額": [0, 0, 0, 0],
+            "備註": ["午餐外帶", "8月房租", "8月薪資入帳", "朋友聚餐"]
+        })
+        ws_trans.update([df_trans.columns.values.tolist()] + df_trans.values.tolist())
+
+    if not df_trans.empty and '日期' in df_trans.columns:
         df_trans['日期'] = pd.to_datetime(df_trans['日期'])
         df_trans['實際扣款日'] = pd.to_datetime(df_trans['實際扣款日'])
-        
+
     return df_budget, df_trans
 
 def save_data_to_gsheets(df_budget, df_trans):
@@ -62,27 +101,27 @@ def save_data_to_gsheets(df_budget, df_trans):
     spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
     sh = client.open_by_key(spreadsheet_id)
     
-    # 回寫 預算設定
     ws_budget = sh.worksheet("預算設定")
     ws_budget.clear()
     ws_budget.update([df_budget.columns.values.tolist()] + df_budget.values.tolist())
     
-    # 回寫 收支紀錄
     ws_trans = sh.worksheet("收支紀錄")
     ws_trans.clear()
     df_trans_save = df_trans.copy()
-    df_trans_save['日期'] = df_trans_save['日期'].dt.strftime('%Y-%m-%d')
-    df_trans_save['實際扣款日'] = df_trans_save['實際扣款日'].dt.strftime('%Y-%m-%d')
+    if not df_trans_save.empty:
+        df_trans_save['日期'] = pd.to_datetime(df_trans_save['日期']).dt.strftime('%Y-%m-%d')
+        df_trans_save['實際扣款日'] = pd.to_datetime(df_trans_save['實際扣款日']).dt.strftime('%Y-%m-%d')
     ws_trans.update([df_trans_save.columns.values.tolist()] + df_trans_save.values.tolist())
 
-# 載入雲端資料至 Session State
+# 初始化 Session State 數據
 if "df_budget" not in st.session_state or "df_trans" not in st.session_state:
     try:
         df_b, df_t = load_data_from_gsheets()
         st.session_state.df_budget = df_b
         st.session_state.df_trans = df_t
     except Exception as e:
-        st.error(f"❌ 串接 Google 試算表失敗，請檢查 Streamlit Secrets 設定：{e}")
+        st.error(f"❌ 串接 Google 試算表失敗：{e}")
+        st.code(traceback.format_exc())
         st.stop()
 # ---------------------------------------------------------
 
@@ -98,13 +137,15 @@ initial_balance = st.sidebar.number_input(
 )
 analysis_date = st.sidebar.date_input("分析基準日期", datetime.date.today())
 
-if st.sidebar.button("🔄 手動從 Google 試算表重新載入"):
-    st.cache_data.clear()
-    df_b, df_t = load_data_from_gsheets()
-    st.session_state.df_budget = df_b
-    st.session_state.df_trans = df_t
-    st.sidebar.success("已從雲端重新載入最新資料！")
-    st.rerun()
+if st.sidebar.button("🔄 從 Google 試算表同步資料"):
+    try:
+        df_b, df_t = load_data_from_gsheets()
+        st.session_state.df_budget = df_b
+        st.session_state.df_trans = df_t
+        st.sidebar.success("已成功同步最新資料！")
+        st.rerun()
+    except Exception as e:
+        st.sidebar.error(f"同步失敗：{e}")
 
 # 3. 主分頁切換
 tab1, tab2 = st.tabs(["📊 分析儀表板", "✍️ 線上記帳與預算編輯"])
@@ -249,7 +290,7 @@ with tab2:
 
     st.markdown("---")
 
-    st.subheader("📝 編輯所有收支紀錄 (修改後需點擊上方「同步至 Google 雲端」按鈕)")
+    st.subheader("📝 編輯所有收支紀錄")
     edited_trans = st.data_editor(
         st.session_state.df_trans,
         num_rows="dynamic",
