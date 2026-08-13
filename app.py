@@ -140,7 +140,7 @@ st.title("💰 個人雲端記帳與預算監控 App (雲端同步版)")
 st.sidebar.header("⚙️ 控制面板")
 initial_balance = st.sidebar.number_input(
     "帳戶起始底金 (NTD)", 
-    value=20000, 
+    value=41721, 
     step=1000, 
     help="設定開始記帳前帳戶內的初始金額。"
 )
