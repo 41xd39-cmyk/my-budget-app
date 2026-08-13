@@ -75,17 +75,25 @@ def load_all_data():
     
     existing_sheets = [w.title for w in sh.worksheets()]
     
+    # 1. 使用者帳號
     ws_users = sh.worksheet("使用者帳號")
     df_users = pd.DataFrame(ws_users.get_all_records())
-    
+    for c in ["username", "password", "name"]:
+        if c not in df_users.columns: df_users[c] = pd.Series(dtype=str)
+
+    # 2. 預算設定
     ws_budget = sh.worksheet("預算設定")
     df_budget = pd.DataFrame(ws_budget.get_all_records())
-    
+    for c in ["user_id", "分類名稱", "預算金額", "支出類型", "每月扣款日"]:
+        if c not in df_budget.columns: df_budget[c] = pd.Series(dtype=object)
+
+    # 3. 收支紀錄
     ws_trans = sh.worksheet("收支紀錄")
     df_trans = pd.DataFrame(ws_trans.get_all_records())
-    if not df_trans.empty and '支付帳戶' not in df_trans.columns:
-        df_trans['支付帳戶'] = "預設銀行帳戶"
+    for c in ["user_id", "日期", "實際扣款日", "收支類型", "分類名稱", "金額", "備註", "支付帳戶"]:
+        if c not in df_trans.columns: df_trans[c] = pd.Series(dtype=object)
 
+    # 4. 支付帳戶 (確保欄位齊全)
     if "支付帳戶" in existing_sheets:
         ws_acc = sh.worksheet("支付帳戶")
         df_acc = pd.DataFrame(ws_acc.get_all_records())
@@ -94,6 +102,10 @@ def load_all_data():
         df_acc = pd.DataFrame(columns=["user_id", "帳戶名稱", "帳戶類型", "起始金額"])
         ws_acc.update([df_acc.columns.values.tolist()])
 
+    for c in ["user_id", "帳戶名稱", "帳戶類型", "起始金額"]:
+        if c not in df_acc.columns: df_acc[c] = pd.Series(dtype=object)
+
+    # 5. 儲蓄目標 (確保欄位齊全)
     if "儲蓄目標" in existing_sheets:
         ws_goals = sh.worksheet("儲蓄目標")
         df_goals = pd.DataFrame(ws_goals.get_all_records())
@@ -101,6 +113,9 @@ def load_all_data():
         ws_goals = sh.add_worksheet(title="儲蓄目標", rows="100", cols="10")
         df_goals = pd.DataFrame(columns=["user_id", "目標名稱", "目標金額", "當前累積金額", "預計完成日期"])
         ws_goals.update([df_goals.columns.values.tolist()])
+
+    for c in ["user_id", "目標名稱", "目標金額", "當前累積金額", "預計完成日期"]:
+        if c not in df_goals.columns: df_goals[c] = pd.Series(dtype=object)
 
     # 數據轉型與清洗
     if not df_budget.empty and '預算金額' in df_budget.columns:
@@ -113,8 +128,8 @@ def load_all_data():
         df_acc['起始金額'] = pd.to_numeric(df_acc['起始金額'], errors='coerce').fillna(0)
 
     if not df_goals.empty:
-        df_goals['目標金額'] = pd.to_numeric(df_goals['目標金額'], errors='coerce').fillna(0)
-        df_goals['當前累積金額'] = pd.to_numeric(df_goals['當前累積金額'], errors='coerce').fillna(0)
+        if '目標金額' in df_goals.columns: df_goals['目標金額'] = pd.to_numeric(df_goals['目標金額'], errors='coerce').fillna(0)
+        if '當前累積金額' in df_goals.columns: df_goals['當前累積金額'] = pd.to_numeric(df_goals['當前累積金額'], errors='coerce').fillna(0)
 
     return df_users, df_budget, df_trans, df_acc, df_goals
 
@@ -181,7 +196,7 @@ if not st.session_state.logged_in:
             submit_login = st.form_submit_button("登入")
             
             if submit_login:
-                if not df_users_all.empty:
+                if not df_users_all.empty and 'username' in df_users_all.columns:
                     hashed_input = hash_password(pass_input.strip())
                     matched_user = df_users_all[
                         (df_users_all['username'].astype(str) == user_input.strip()) & 
@@ -233,7 +248,7 @@ if col_btn2.button("🚪 登出"):
 
 st.sidebar.markdown("---")
 
-# 當前用戶資料隔離
+# 當前用戶資料隔離 (安全提取)
 df_user_budget = df_budget_all[df_budget_all['user_id'].astype(str) == current_user].copy()
 df_user_trans = df_trans_all[df_trans_all['user_id'].astype(str) == current_user].copy()
 df_user_acc = df_acc_all[df_acc_all['user_id'].astype(str) == current_user].copy()
@@ -326,7 +341,7 @@ with tab1:
 
     # 多帳戶獨立餘額展示列
     st.subheader("💳 個別支付帳戶即時餘額")
-    acc_cols = st.columns(min(len(account_balances), 4))
+    acc_cols = st.columns(min(max(len(account_balances), 1), 4))
     for idx, (acc_name, bal) in enumerate(account_balances.items()):
         acc_cols[idx % 4].metric(f"🏦 {acc_name}", f"${bal:,.0f}")
 
@@ -369,7 +384,6 @@ with tab1:
 
     df_report = pd.DataFrame(report_data)
 
-    # 匯出 Excel 月報表按鈕
     col_rpt1, col_rpt2 = st.columns([3, 1])
     col_rpt1.subheader(f"📊 {analysis_date.year} 年 {analysis_date.month} 月 預算 vs. 當月消費分析")
     
@@ -381,7 +395,6 @@ with tab1:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    # 圖表呈現：柱狀圖 (預算 vs 消費) + 圓餅圖 (消費比例)
     chart_col1, chart_col2 = st.columns([6, 4])
     
     with chart_col1:
@@ -421,10 +434,8 @@ with tab1:
                     colors=plt.cm.Set3.colors
                 )
                 if my_font:
-                    for text in texts:
-                        text.set_fontproperties(my_font)
-                    for autotext in autotexts:
-                        autotext.set_fontproperties(my_font)
+                    for text in texts: text.set_fontproperties(my_font)
+                    for autotext in autotexts: autotext.set_fontproperties(my_font)
                 ax_pie.set_title("🍕 當月消費類別比例", fontproperties=my_font if my_font else None)
                 st.pyplot(fig_pie)
         else:
@@ -435,7 +446,7 @@ with tab1:
 
     st.markdown("---")
 
-    # 跨月歷史趨勢圖 (長程追蹤)
+    # 跨月歷史趨勢圖
     st.subheader("📈 跨月歷史收支與淨儲蓄趨勢圖")
     if not df_user_trans.empty:
         df_trend = df_user_trans.copy()
@@ -468,7 +479,6 @@ with tab1:
 
     st.markdown("---")
 
-    # 週期性固定支出帶入與儲蓄目標
     col_auto, col_goal_show = st.columns(2)
     
     with col_auto:
@@ -504,10 +514,10 @@ with tab1:
         st.subheader("🎯 儲蓄目標進度")
         if not df_user_goals.empty:
             for _, g_row in df_user_goals.iterrows():
-                target_amt = float(g_row['目標金額'])
-                curr_amt = float(g_row['當前累積金額'])
+                target_amt = float(g_row['目標金額']) if '目標金額' in g_row else 0
+                curr_amt = float(g_row['當前累積金額']) if '當前累積金額' in g_row else 0
                 pct = min(curr_amt / target_amt, 1.0) if target_amt > 0 else 0
-                st.write(f"**{g_row['目標名稱']}** (${curr_amt:,.0f} / ${target_amt:,.0f})")
+                st.write(f"**{g_row.get('目標名稱', '目標')}** (${curr_amt:,.0f} / ${target_amt:,.0f})")
                 st.progress(pct)
 
 # ==================== Tab 2: 線上記帳與預算編輯 ====================
@@ -527,7 +537,7 @@ with tab2:
         f_col4, f_col5, f_col6, f_col7 = st.columns(4)
         t_category = f_col4.selectbox("分類名稱", all_available_categories)
         t_amount = f_col5.number_input("金額 (NTD)", min_value=1, value=100, step=50)
-        t_account = f_col6.selectbox("支付/入帳帳戶", user_accounts_list)
+        t_account = f_col6.selectbox("支付/入帳帳戶", user_accounts_list if user_accounts_list else ["預設帳戶"])
         t_note = f_col7.text_input("備註（選填）", "")
         
         submit_btn = st.form_submit_button("➕ 欄位無誤，獨立新增紀錄")
@@ -571,7 +581,7 @@ with tab2:
                 "實際扣款日": st.column_config.DateColumn("實際扣款日", format="YYYY-MM-DD"),
                 "收支類型": st.column_config.SelectboxColumn("收支類型", options=["支出", "收入"]),
                 "分類名稱": st.column_config.SelectboxColumn("分類名稱", options=all_available_categories),
-                "支付帳戶": st.column_config.SelectboxColumn("支付帳戶", options=user_accounts_list),
+                "支付帳戶": st.column_config.SelectboxColumn("支付帳戶", options=user_accounts_list if user_accounts_list else ["預設帳戶"]),
                 "金額": st.column_config.NumberColumn("金額 (NTD)", min_value=0, format="$%d")
             }
         )
