@@ -70,6 +70,13 @@ def load_all_data():
     ws_trans = sh.worksheet("收支紀錄")
     df_trans = pd.DataFrame(ws_trans.get_all_records())
     
+    # 強制將數值欄位轉為數字型態，防止文字計算錯誤
+    if not df_budget.empty and '預算金額' in df_budget.columns:
+        df_budget['預算金額'] = pd.to_numeric(df_budget['預算金額'], errors='coerce').fillna(0)
+        
+    if not df_trans.empty and '金額' in df_trans.columns:
+        df_trans['金額'] = pd.to_numeric(df_trans['金額'], errors='coerce').fillna(0)
+    
     return df_users, df_budget, df_trans
 
 def save_data_to_gsheets(df_budget_all, df_trans_all):
@@ -181,6 +188,11 @@ if df_user_budget.empty:
         "每月扣款日": [5, 25, 10, "", "", "", ""]
     })
 
+# 強制確保預算與金額轉為數字
+df_user_budget['預算金額'] = pd.to_numeric(df_user_budget['預算金額'], errors='coerce').fillna(0)
+if not df_user_trans.empty and '金額' in df_user_trans.columns:
+    df_user_trans['金額'] = pd.to_numeric(df_user_trans['金額'], errors='coerce').fillna(0)
+
 initial_balance = st.sidebar.number_input("帳戶起始底金 (NTD)", value=20000, step=1000)
 analysis_date = st.sidebar.date_input("分析基準日期", datetime.date.today())
 
@@ -211,6 +223,7 @@ with tab1:
         df_all_pending = df_user_trans[
             (df_user_trans['收支類型'] == '支出') & 
             (df_user_trans['日期_dt'].dt.date <= analysis_date) & 
+            (df_trans_all['user_id'].astype(str) == current_user) &
             (df_user_trans['扣款日_dt'].dt.date > analysis_date)
         ]
         total_unpaid_credit_card = df_all_pending['金額'].sum()
@@ -230,9 +243,9 @@ with tab1:
 
     for _, row in df_user_budget.iterrows():
         cat = row['分類名稱']
-        budget = row['預算金額']
+        budget = float(row['預算金額'])
         is_fixed = (row['支出類型'] == '固定')
-        spent = actual_spend.get(cat, 0)
+        spent = float(actual_spend.get(cat, 0))
         diff = budget - spent
         
         if is_fixed:
@@ -277,7 +290,7 @@ with tab1:
         width = 0.35
 
         ax.bar([p - width/2 for p in x], df_report['月初預估預算'], width, label='月初預估預算', color='#e0e0e0')
-        colors = ['#ea4335' if "透支" in r['%s' % '狀態'] or "燒錢" in r['%s' % '狀態'] else '#34a853' for _, r in df_report.iterrows()]
+        colors = ['#ea4335' if "透支" in r['狀態'] or "燒錢" in r['狀態'] else '#34a853' for _, r in df_report.iterrows()]
         ax.bar([p + width/2 for p in x], df_report['當月消費金額'], width, label='當月消費金額', color=colors)
         ax.plot([p + width/2 for p in x], df_report['預估月底花費'], "r--o", label='預估月底總花費')
 
@@ -298,7 +311,6 @@ with tab1:
 
 # ==================== Tab 2: 線上記帳與預算編輯 ====================
 with tab2:
-    # 提取當前使用者自訂的所有預算分類名稱
     user_custom_categories = list(df_user_budget['分類名稱'].unique())
     income_categories = ["薪資", "副業收入", "投資理財", "其他收入"]
     all_available_categories = user_custom_categories + [c for c in income_categories if c not in user_custom_categories]
@@ -316,7 +328,7 @@ with tab2:
         t_amount = f_col5.number_input("金額 (NTD)", min_value=1, value=100, step=50)
         t_note = f_col6.text_input("備註（選填）", "")
         
-        submit_btn = st.form_submit_button("➕ 立即新增紀錄")
+        submit_btn = st.form_submit_button("➕ 欄位無誤，立即新增紀錄")
         
         if submit_btn:
             new_record = pd.DataFrame([{
@@ -342,7 +354,6 @@ with tab2:
         st.subheader("📝 編輯您的個人收支紀錄")
         trans_display_cols = ["日期", "實際扣款日", "收支類型", "分類名稱", "金額", "備註"]
         
-        # 確保 DataFrame 結構正確
         if df_user_trans.empty:
             df_editor_input = pd.DataFrame(columns=trans_display_cols)
         else:
