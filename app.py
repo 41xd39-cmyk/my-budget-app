@@ -3,6 +3,7 @@ import urllib.request
 import calendar
 import datetime
 import traceback
+import hashlib
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -37,6 +38,11 @@ if os.path.exists(font_path) and os.path.getsize(font_path) > 100000:
 plt.rcParams['axes.unicode_minus'] = False
 # ----------------------------------------------------
 
+# ----------------- 安全性哈希函式 -----------------
+def hash_password(password: str) -> str:
+    """使用 SHA-256 加密密碼"""
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+
 # ----------------- Google Sheets 串接設定 -----------------
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -55,15 +61,12 @@ def load_all_data():
     spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
     sh = client.open_by_key(spreadsheet_id)
     
-    # 讀取使用者帳號表
     ws_users = sh.worksheet("使用者帳號")
     df_users = pd.DataFrame(ws_users.get_all_records())
     
-    # 讀取預算設定
     ws_budget = sh.worksheet("預算設定")
     df_budget = pd.DataFrame(ws_budget.get_all_records())
     
-    # 讀取收支紀錄
     ws_trans = sh.worksheet("收支紀錄")
     df_trans = pd.DataFrame(ws_trans.get_all_records())
     
@@ -91,9 +94,10 @@ def register_user(username, password, name):
     spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
     sh = client.open_by_key(spreadsheet_id)
     ws_users = sh.worksheet("使用者帳號")
-    ws_users.append_row([str(username), str(password), str(name)])
+    hashed_pass = hash_password(password)
+    ws_users.append_row([str(username), str(hashed_pass), str(name)])
 
-# ----------------- 登入機制處理 -----------------
+# ----------------- 登入狀態控制 -----------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.current_user = None
@@ -104,8 +108,9 @@ except Exception as e:
     st.error(f"❌ 讀取資料庫失敗：{e}")
     st.stop()
 
+# 尚未登入視圖
 if not st.session_state.logged_in:
-    st.title("🔐 多用戶雲端記帳管家 - 系統登入")
+    st.title("🔐 雲端記帳管家 - 安全登入")
     login_tab, register_tab = st.tabs(["🔑 帳號登入", "📝 註冊新帳號"])
     
     with login_tab:
@@ -116,15 +121,16 @@ if not st.session_state.logged_in:
             
             if submit_login:
                 if not df_users_all.empty:
+                    hashed_input = hash_password(pass_input.strip())
                     matched_user = df_users_all[
                         (df_users_all['username'].astype(str) == user_input.strip()) & 
-                        (df_users_all['password'].astype(str) == pass_input.strip())
+                        ((df_users_all['password'].astype(str) == hashed_input) | (df_users_all['password'].astype(str) == pass_input.strip()))
                     ]
                     if not matched_user.empty:
                         st.session_state.logged_in = True
                         st.session_state.current_user = user_input.strip()
                         st.session_state.user_name = matched_user.iloc[0]['name']
-                        st.success("登入成功！頁面轉導中...")
+                        st.success("登入成功！頁面載入中...")
                         st.rerun()
                     else:
                         st.error("❌ 帳號或密碼錯誤！")
@@ -136,7 +142,7 @@ if not st.session_state.logged_in:
             reg_user = st.text_input("設定帳號")
             reg_pass = st.text_input("設定密碼", type="password")
             reg_name = st.text_input("您的姓名/暱稱")
-            submit_reg = st.form_submit_button("註冊並建立預設範本")
+            submit_reg = st.form_submit_button("註冊並建立帳戶")
             
             if submit_reg:
                 if reg_user and reg_pass:
@@ -144,7 +150,7 @@ if not st.session_state.logged_in:
                         st.error("⚠️ 該帳號已被註冊，請換一個帳號！")
                     else:
                         register_user(reg_user, reg_pass, reg_name)
-                        st.success("✅ 註冊成功！請切換至「帳號登入」分頁進行登入。")
+                        st.success("✅ 註冊成功！密碼已進行加密保護，請切換至「帳號登入」分頁。")
                 else:
                     st.warning("請填寫完整的帳號與密碼。")
     st.stop()
@@ -152,7 +158,6 @@ if not st.session_state.logged_in:
 # ==================== 登入成功後的主介面 ====================
 current_user = st.session_state.current_user
 
-# 側邊欄登入狀態資訊
 st.sidebar.markdown(f"👤 **目前登入者：** {st.session_state.user_name} (`{current_user}`)")
 if st.sidebar.button("🚪 登出系統"):
     st.session_state.logged_in = False
@@ -161,21 +166,21 @@ if st.sidebar.button("🚪 登出系統"):
 
 st.sidebar.markdown("---")
 
-# 核心：過濾出「僅限當前登入使用者」的資料
+# 資料隔離：僅提取當前用戶
 df_user_budget = df_budget_all[df_budget_all['user_id'].astype(str) == current_user].copy()
 df_user_trans = df_trans_all[df_trans_all['user_id'].astype(str) == current_user].copy()
 
-# 若新使用者沒有預算設定，給予預設範本
+# 若使用者完全無預算分類，自動初始化基礎範本
 if df_user_budget.empty:
+    default_categories = ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"]
     df_user_budget = pd.DataFrame({
-        "user_id": [current_user]*7,
-        "分類名稱": ["居住房租", "水電瓦斯", "電信網路", "飲食餐飲", "交通通勤", "娛樂休閒", "日常雜項"],
-        "預算金額": [11000, 1000, 500, 12000, 3000, 4000, 5000],
+        "user_id": [current_user]*len(default_categories),
+        "分類名稱": default_categories,
+        "預算金額": [15000, 3000, 1000, 10000, 3000, 4000, 5000],
         "支出類型": ["固定", "固定", "固定", "變動", "變動", "變動", "變動"],
-        "每月扣款日": [20, 20, 20, "", "", "", ""]
+        "每月扣款日": [5, 25, 10, "", "", "", ""]
     })
 
-# 側邊欄控制面板
 initial_balance = st.sidebar.number_input("帳戶起始底金 (NTD)", value=20000, step=1000)
 analysis_date = st.sidebar.date_input("分析基準日期", datetime.date.today())
 
@@ -272,7 +277,7 @@ with tab1:
         width = 0.35
 
         ax.bar([p - width/2 for p in x], df_report['月初預估預算'], width, label='月初預估預算', color='#e0e0e0')
-        colors = ['#ea4335' if "透支" in r['狀態'] or "燒錢" in r['狀態'] else '#34a853' for _, r in df_report.iterrows()]
+        colors = ['#ea4335' if "透支" in r['%s' % '狀態'] or "燒錢" in r['%s' % '狀態'] else '#34a853' for _, r in df_report.iterrows()]
         ax.bar([p + width/2 for p in x], df_report['當月消費金額'], width, label='當月消費金額', color=colors)
         ax.plot([p + width/2 for p in x], df_report['預估月底花費'], "r--o", label='預估月底總花費')
 
@@ -293,6 +298,11 @@ with tab1:
 
 # ==================== Tab 2: 線上記帳與預算編輯 ====================
 with tab2:
+    # 提取當前使用者自訂的所有預算分類名稱
+    user_custom_categories = list(df_user_budget['分類名稱'].unique())
+    income_categories = ["薪資", "副業收入", "投資理財", "其他收入"]
+    all_available_categories = user_custom_categories + [c for c in income_categories if c not in user_custom_categories]
+
     st.subheader("➕ 單筆快速填寫記帳")
     
     with st.form("add_transaction_form", clear_on_submit=True):
@@ -302,8 +312,7 @@ with tab2:
         t_type = f_col3.selectbox("收支類型", ["支出", "收入"])
         
         f_col4, f_col5, f_col6 = st.columns(3)
-        category_options = list(df_user_budget['分類名稱'].unique()) + ["薪資", "副業收入", "投資理財", "其他"]
-        t_category = f_col4.selectbox("分類名稱", category_options)
+        t_category = f_col4.selectbox("分類名稱 (取自您的自訂分類)", all_available_categories)
         t_amount = f_col5.number_input("金額 (NTD)", min_value=1, value=100, step=50)
         t_note = f_col6.text_input("備註（選填）", "")
         
@@ -327,26 +336,60 @@ with tab2:
 
     st.markdown("---")
 
-    st.subheader("📝 編輯您的個人收支紀錄")
-    # 只呈現與編輯當前使用者的紀錄
-    display_cols = ["日期", "實際扣款日", "收支類型", "分類名稱", "金額", "備註"]
-    edited_user_trans = st.data_editor(
-        df_user_trans[display_cols] if not df_user_trans.empty else pd.DataFrame(columns=display_cols),
-        num_rows="dynamic",
-        use_container_width=True,
-        column_config={
-            "日期": st.column_config.DateColumn("消費日期", format="YYYY-MM-DD"),
-            "實際扣款日": st.column_config.DateColumn("實際扣款日", format="YYYY-MM-DD"),
-            "金額": st.column_config.NumberColumn("金額 (NTD)", min_value=0, format="$%d")
-        }
-    )
-    
-    if st.button("💾 儲存個人表格修改"):
-        edited_user_trans['user_id'] = current_user
-        # 保留其他使用者的資料，僅替換當前使用者的資料
-        other_users_trans = df_trans_all[df_trans_all['user_id'].astype(str) != current_user]
-        df_trans_new_all = pd.concat([other_users_trans, edited_user_trans], ignore_index=True)
+    col_edit1, col_edit2 = st.columns([6, 4])
+
+    with col_edit1:
+        st.subheader("📝 編輯您的個人收支紀錄")
+        trans_display_cols = ["日期", "實際扣款日", "收支類型", "分類名稱", "金額", "備註"]
         
-        save_data_to_gsheets(df_budget_all, df_trans_new_all)
-        st.success("✅ 個人變更已成功同步至雲端！")
-        st.rerun()
+        # 確保 DataFrame 結構正確
+        if df_user_trans.empty:
+            df_editor_input = pd.DataFrame(columns=trans_display_cols)
+        else:
+            df_editor_input = df_user_trans[trans_display_cols].copy()
+
+        edited_user_trans = st.data_editor(
+            df_editor_input,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "日期": st.column_config.DateColumn("消費日期", format="YYYY-MM-DD"),
+                "實際扣款日": st.column_config.DateColumn("實際扣款日", format="YYYY-MM-DD"),
+                "收支類型": st.column_config.SelectboxColumn("收支類型", options=["支出", "收入"]),
+                "分類名稱": st.column_config.SelectboxColumn("分類名稱", options=all_available_categories),
+                "金額": st.column_config.NumberColumn("金額 (NTD)", min_value=0, format="$%d")
+            }
+        )
+        
+        if st.button("💾 儲存收支紀錄修改"):
+            edited_user_trans['user_id'] = current_user
+            other_users_trans = df_trans_all[df_trans_all['user_id'].astype(str) != current_user]
+            df_trans_new_all = pd.concat([other_users_trans, edited_user_trans], ignore_index=True)
+            
+            save_data_to_gsheets(df_budget_all, df_trans_new_all)
+            st.success("✅ 個人收支紀錄已同步更新！")
+            st.rerun()
+
+    with col_edit2:
+        st.subheader("🎯 自訂您的預算與分類設定")
+        budget_display_cols = ["分類名稱", "預算金額", "支出類型", "每月扣款日"]
+        
+        edited_user_budget = st.data_editor(
+            df_user_budget[budget_display_cols],
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "分類名稱": st.column_config.TextColumn("分類名稱", help="您可以自由新增或修改分類（如：寵物、健身）"),
+                "預算金額": st.column_config.NumberColumn("預算金額", min_value=0, format="$%d"),
+                "支出類型": st.column_config.SelectboxColumn("支出類型", options=["固定", "變動"])
+            }
+        )
+        
+        if st.button("💾 儲存自訂分類與預算"):
+            edited_user_budget['user_id'] = current_user
+            other_users_budget = df_budget_all[df_budget_all['user_id'].astype(str) != current_user]
+            df_budget_new_all = pd.concat([other_users_budget, edited_user_budget], ignore_index=True)
+            
+            save_data_to_gsheets(df_budget_new_all, df_trans_all)
+            st.success("✅ 個人預算與分類已同步更新！表單選單將自動套用新分類。")
+            st.rerun()
