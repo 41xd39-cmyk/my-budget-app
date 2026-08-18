@@ -3,7 +3,6 @@ import os
 import urllib.request
 import calendar
 import datetime
-import traceback
 import hashlib
 import pandas as pd
 import streamlit as st
@@ -15,35 +14,57 @@ from google.oauth2.service_account import Credentials
 # 1. 網頁頁面設定
 st.set_page_config(page_title="多用戶雲端記帳管家", page_icon="💰", layout="wide")
 
-# ----------------- 中文字型自動註冊 -----------------
-font_path = "NotoSansTC-Regular.ttf"
-if not os.path.exists(font_path) or os.path.getsize(font_path) < 100000:
-    font_urls = [
-        "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanstc/NotoSansTC-Regular.ttf",
-        "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
-    ]
-    for url in font_urls:
-        try:
-            urllib.request.urlretrieve(url, font_path)
-            if os.path.exists(font_path) and os.path.getsize(font_path) > 100000:
-                break
-        except Exception:
-            continue
+# ----------------- 手機 PWA 與全螢幕適配標籤 -----------------
+st.markdown("""
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="記帳管家">
+<meta name="theme-color" content="#4285F4">
+""", unsafe_allow_html=True)
 
-my_font = None
-if os.path.exists(font_path) and os.path.getsize(font_path) > 100000:
-    fm.fontManager.addfont(font_path)
-    my_font = fm.FontProperties(fname=font_path)
-    plt.rcParams['font.family'] = my_font.get_name()
+# ----------------- 中文字型快取載入 (僅伺服器啟動載入一次) -----------------
+@st.cache_resource
+def setup_chinese_font():
+    font_path = "NotoSansTC-Regular.ttf"
+    if not os.path.exists(font_path) or os.path.getsize(font_path) < 100000:
+        font_urls = [
+            "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanstc/NotoSansTC-Regular.ttf",
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
+        ]
+        for url in font_urls:
+            try:
+                urllib.request.urlretrieve(url, font_path)
+                if os.path.exists(font_path) and os.path.getsize(font_path) > 100000:
+                    break
+            except Exception:
+                continue
 
-plt.rcParams['axes.unicode_minus'] = False
-# ----------------------------------------------------
+    if os.path.exists(font_path) and os.path.getsize(font_path) > 100000:
+        fm.fontManager.addfont(font_path)
+        font_prop = fm.FontProperties(fname=font_path)
+        plt.rcParams['font.family'] = font_prop.get_name()
+        plt.rcParams['axes.unicode_minus'] = False
+        return font_prop
+
+    # 備用 Linux 內建字型
+    for sys_font in ['/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc', '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc']:
+        if os.path.exists(sys_font):
+            fm.fontManager.addfont(sys_font)
+            font_prop = fm.FontProperties(fname=sys_font)
+            plt.rcParams['font.family'] = font_prop.get_name()
+            plt.rcParams['axes.unicode_minus'] = False
+            return font_prop
+
+    plt.rcParams['axes.unicode_minus'] = False
+    return None
+
+my_font = setup_chinese_font()
 
 # ----------------- 安全性哈希函式 -----------------
 def hash_text(text: str) -> str:
     return hashlib.sha256(text.strip().encode('utf-8')).hexdigest()
 
-# ----------------- Excel 月報表匯出生成器 -----------------
+# ----------------- Excel 月報表生成器 -----------------
 def generate_monthly_excel_report(df_report_month, df_trans_month, user_name, analysis_date):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -53,7 +74,7 @@ def generate_monthly_excel_report(df_report_month, df_trans_month, user_name, an
             df_trans_month[display_cols].to_excel(writer, sheet_name='當月收支明細', index=False)
     return output.getvalue()
 
-# ----------------- Google Sheets 串接設定 -----------------
+# ----------------- Google Sheets 串接與批次讀取 (Batch Read) -----------------
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -67,57 +88,73 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
 
+def parse_sheet_values(values_matrix, default_cols):
+    """解析 values 矩陣轉為 DataFrame 並補齊欄位"""
+    if not values_matrix or len(values_matrix) == 0:
+        return pd.DataFrame(columns=default_cols)
+    
+    headers = [str(h).strip() for h in values_matrix[0]]
+    if not any(headers):
+        return pd.DataFrame(columns=default_cols)
+    
+    if len(values_matrix) > 1:
+        df = pd.DataFrame(values_matrix[1:], columns=headers)
+    else:
+        df = pd.DataFrame(columns=headers)
+        
+    df = df.loc[:, df.columns != ""]
+    for c in default_cols:
+        if c not in df.columns:
+            df[c] = pd.Series(dtype=object)
+    return df
+
 @st.cache_data(ttl=300)
 def load_all_data():
     client = get_gspread_client()
     spreadsheet_id = st.secrets["general"]["spreadsheet_id"]
     sh = client.open_by_key(spreadsheet_id)
     
-    existing_sheets = [w.title for w in sh.worksheets()]
+    existing_titles = [w.title for w in sh.worksheets()]
     
-    # 1. 使用者帳號
-    ws_users = sh.worksheet("使用者帳號")
-    df_users = pd.DataFrame(ws_users.get_all_records())
-    for c in ["username", "password", "name", "sec_question", "sec_answer"]:
-        if c not in df_users.columns: df_users[c] = pd.Series(dtype=str)
+    # 確保 5 個必要工作表存在
+    required_sheets = {
+        "使用者帳號": ["username", "password", "name", "sec_question", "sec_answer"],
+        "預算設定": ["user_id", "分類名稱", "預算金額", "支出類型", "每月扣款日"],
+        "收支紀錄": ["user_id", "日期", "實際扣款日", "收支類型", "分類名稱", "金額", "備註", "支付帳戶"],
+        "支付帳戶": ["user_id", "帳戶名稱", "帳戶類型", "起始金額"],
+        "儲蓄目標": ["user_id", "目標名稱", "目標金額", "當前累積金額", "預計完成日期"]
+    }
+    
+    for sheet_name, cols in required_sheets.items():
+        if sheet_name not in existing_titles:
+            ws = sh.add_worksheet(title=sheet_name, rows="100", cols="10")
+            ws.append_row(cols)
+    
+    # 🚀 一次性打包批次讀取 5 張表，速度提升 5 倍！
+    batch_ranges = [
+        "使用者帳號!A:E",
+        "預算設定!A:E",
+        "收支紀錄!A:H",
+        "支付帳戶!A:D",
+        "儲蓄目標!A:E"
+    ]
+    
+    batch_res = sh.values_batch_get(batch_ranges)
+    value_ranges = batch_res.get('valueRanges', [])
+    
+    val_users = value_ranges[0].get('values', []) if len(value_ranges) > 0 else []
+    val_budget = value_ranges[1].get('values', []) if len(value_ranges) > 1 else []
+    val_trans = value_ranges[2].get('values', []) if len(value_ranges) > 2 else []
+    val_acc = value_ranges[3].get('values', []) if len(value_ranges) > 3 else []
+    val_goals = value_ranges[4].get('values', []) if len(value_ranges) > 4 else []
 
-    # 2. 預算設定
-    ws_budget = sh.worksheet("預算設定")
-    df_budget = pd.DataFrame(ws_budget.get_all_records())
-    for c in ["user_id", "分類名稱", "預算金額", "支出類型", "每月扣款日"]:
-        if c not in df_budget.columns: df_budget[c] = pd.Series(dtype=object)
+    df_users = parse_sheet_values(val_users, required_sheets["使用者帳號"])
+    df_budget = parse_sheet_values(val_budget, required_sheets["預算設定"])
+    df_trans = parse_sheet_values(val_trans, required_sheets["收支紀錄"])
+    df_acc = parse_sheet_values(val_acc, required_sheets["支付帳戶"])
+    df_goals = parse_sheet_values(val_goals, required_sheets["儲蓄目標"])
 
-    # 3. 收支紀錄
-    ws_trans = sh.worksheet("收支紀錄")
-    df_trans = pd.DataFrame(ws_trans.get_all_records())
-    for c in ["user_id", "日期", "實際扣款日", "收支類型", "分類名稱", "金額", "備註", "支付帳戶"]:
-        if c not in df_trans.columns: df_trans[c] = pd.Series(dtype=object)
-
-    # 4. 支付帳戶
-    if "支付帳戶" in existing_sheets:
-        ws_acc = sh.worksheet("支付帳戶")
-        df_acc = pd.DataFrame(ws_acc.get_all_records())
-    else:
-        ws_acc = sh.add_worksheet(title="支付帳戶", rows="100", cols="10")
-        df_acc = pd.DataFrame(columns=["user_id", "帳戶名稱", "帳戶類型", "起始金額"])
-        ws_acc.update([df_acc.columns.values.tolist()])
-
-    for c in ["user_id", "帳戶名稱", "帳戶類型", "起始金額"]:
-        if c not in df_acc.columns: df_acc[c] = pd.Series(dtype=object)
-
-    # 5. 儲蓄目標
-    if "儲蓄目標" in existing_sheets:
-        ws_goals = sh.worksheet("儲蓄目標")
-        df_goals = pd.DataFrame(ws_goals.get_all_records())
-    else:
-        ws_goals = sh.add_worksheet(title="儲蓄目標", rows="100", cols="10")
-        df_goals = pd.DataFrame(columns=["user_id", "目標名稱", "目標金額", "當前累積金額", "預計完成日期"])
-        ws_goals.update([df_goals.columns.values.tolist()])
-
-    for c in ["user_id", "目標名稱", "目標金額", "當前累積金額", "預計完成日期"]:
-        if c not in df_goals.columns: df_goals[c] = pd.Series(dtype=object)
-
-    # 數據轉型
+    # 數值型態處理
     if not df_budget.empty and '預算金額' in df_budget.columns:
         df_budget['預算金額'] = pd.to_numeric(df_budget['預算金額'], errors='coerce').fillna(0)
         
