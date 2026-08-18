@@ -349,7 +349,7 @@ if df_user_acc.empty:
         "user_id": [current_user]*3,
         "帳戶名稱": ["現金錢包", "主力銀行帳戶", "常用信用卡"],
         "帳戶類型": ["現金", "銀行帳戶", "信用卡"],
-        "起始金額": [3000, 50000, 0]
+        "起始金額": [0, 0, 0]
     })
 
 if df_user_budget.empty:
@@ -357,9 +357,9 @@ if df_user_budget.empty:
     df_user_budget = pd.DataFrame({
         "user_id": [current_user]*len(default_categories),
         "分類名稱": default_categories,
-        "預算金額": [11000, 3000, 1000, 10000, 3000, 4000, 5000],
+        "預算金額": [11000, 1000, 500, 12000, 3000, 4000, 5000],
         "支出類型": ["固定", "固定", "固定", "變動", "變動", "變動", "變動"],
-        "每月扣款日": [5, 25, 10, "", "", "", ""]
+        "每月扣款日": [20, 20, 20, "", "", "", ""]
     })
 
 analysis_date = st.sidebar.date_input("分析基準日期", datetime.date.today())
