@@ -22,7 +22,7 @@ st.markdown("""
 <meta name="theme-color" content="#4285F4">
 """, unsafe_allow_html=True)
 
-# ----------------- 中文字型快取載入 (僅伺服器啟動載入一次) -----------------
+# ----------------- 中文字型快取載入 -----------------
 @st.cache_resource
 def setup_chinese_font():
     font_path = "NotoSansTC-Regular.ttf"
@@ -46,7 +46,6 @@ def setup_chinese_font():
         plt.rcParams['axes.unicode_minus'] = False
         return font_prop
 
-    # 備用 Linux 內建字型
     for sys_font in ['/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc', '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc']:
         if os.path.exists(sys_font):
             fm.fontManager.addfont(sys_font)
@@ -74,7 +73,7 @@ def generate_monthly_excel_report(df_report_month, df_trans_month, user_name, an
             df_trans_month[display_cols].to_excel(writer, sheet_name='當月收支明細', index=False)
     return output.getvalue()
 
-# ----------------- Google Sheets 串接與批次讀取 (Batch Read) -----------------
+# ----------------- Google Sheets 串接與批次讀取 -----------------
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -89,7 +88,6 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 def parse_sheet_values(values_matrix, default_cols):
-    """解析 values 矩陣轉為 DataFrame 並補齊欄位"""
     if not values_matrix or len(values_matrix) == 0:
         return pd.DataFrame(columns=default_cols)
     
@@ -116,7 +114,6 @@ def load_all_data():
     
     existing_titles = [w.title for w in sh.worksheets()]
     
-    # 確保 5 個必要工作表存在
     required_sheets = {
         "使用者帳號": ["username", "password", "name", "sec_question", "sec_answer"],
         "預算設定": ["user_id", "分類名稱", "預算金額", "支出類型", "每月扣款日"],
@@ -130,7 +127,6 @@ def load_all_data():
             ws = sh.add_worksheet(title=sheet_name, rows="100", cols="10")
             ws.append_row(cols)
     
-    # 🚀 一次性打包批次讀取 5 張表，速度提升 5 倍！
     batch_ranges = [
         "使用者帳號!A:E",
         "預算設定!A:E",
@@ -154,7 +150,6 @@ def load_all_data():
     df_acc = parse_sheet_values(val_acc, required_sheets["支付帳戶"])
     df_goals = parse_sheet_values(val_goals, required_sheets["儲蓄目標"])
 
-    # 數值型態處理
     if not df_budget.empty and '預算金額' in df_budget.columns:
         df_budget['預算金額'] = pd.to_numeric(df_budget['預算金額'], errors='coerce').fillna(0)
         
@@ -183,8 +178,10 @@ def save_all_data_to_gsheets(df_budget_all, df_trans_all, df_acc_all, df_goals_a
     ws_trans.clear()
     df_trans_save = df_trans_all.copy()
     if not df_trans_save.empty and '日期' in df_trans_save.columns:
-        df_trans_save['日期'] = pd.to_datetime(df_trans_save['日期']).dt.strftime('%Y-%m-%d')
-        df_trans_save['實際扣款日'] = pd.to_datetime(df_trans_save['實際扣款日']).dt.strftime('%Y-%m-%d')
+        # 存檔時若扣款日空白，自動補為交易日期
+        df_trans_save['實際扣款日'] = df_trans_save['實際扣款日'].fillna(df_trans_save['日期'])
+        df_trans_save['日期'] = pd.to_datetime(df_trans_save['日期'], errors='coerce').dt.strftime('%Y-%m-%d')
+        df_trans_save['實際扣款日'] = pd.to_datetime(df_trans_save['實際扣款日'], errors='coerce').dt.strftime('%Y-%m-%d')
     ws_trans.update([df_trans_save.columns.values.tolist()] + df_trans_save.fillna("").values.tolist())
     
     ws_acc = sh.worksheet("支付帳戶")
@@ -195,7 +192,7 @@ def save_all_data_to_gsheets(df_budget_all, df_trans_all, df_acc_all, df_goals_a
     ws_goals.clear()
     df_goals_save = df_goals_all.copy()
     if not df_goals_save.empty and '預計完成日期' in df_goals_save.columns:
-        df_goals_save['預計完成日期'] = pd.to_datetime(df_goals_save['預計完成日期']).dt.strftime('%Y-%m-%d')
+        df_goals_save['預計完成日期'] = pd.to_datetime(df_goals_save['預計完成日期'], errors='coerce').dt.strftime('%Y-%m-%d')
     ws_goals.update([df_goals_save.columns.values.tolist()] + df_goals_save.fillna("").values.tolist())
 
     st.cache_data.clear()
@@ -375,9 +372,14 @@ with tab1:
     total_assets = 0
     
     if not df_user_trans.empty:
-        df_user_trans['實際扣款日'] = df_user_trans['實際扣款日'].fillna(df_user_trans['日期'])
-        df_user_trans['日期_dt'] = pd.to_datetime(df_user_trans['日期'])
-        df_user_trans['扣款日_dt'] = pd.to_datetime(df_user_trans['實際扣款日'])
+        # 日期安全解析（若扣款日空白則使用交易日）
+        df_user_trans['實際扣款日'] = df_user_trans['實際扣款日'].replace("", None).fillna(df_user_trans['日期'])
+        df_user_trans['日期_dt'] = pd.to_datetime(df_user_trans['日期'], errors='coerce')
+        df_user_trans['扣款日_dt'] = pd.to_datetime(df_user_trans['實際扣款日'], errors='coerce')
+        
+        # 補齊無效日期的情況
+        df_user_trans['日期_dt'] = df_user_trans['日期_dt'].fillna(pd.to_datetime(datetime.date.today()))
+        df_user_trans['扣款日_dt'] = df_user_trans['扣款日_dt'].fillna(df_user_trans['日期_dt'])
         
         df_paid = df_user_trans[df_user_trans['扣款日_dt'].dt.date <= analysis_date]
         
@@ -614,23 +616,25 @@ with tab2:
     
     with st.form("add_transaction_form", clear_on_submit=True):
         f_col1, f_col2, f_col3 = st.columns(3)
-        t_date = f_col1.date_input("消費/交易日期", datetime.date.today())
-        t_pay_date = f_col2.date_input("實際扣款日期", datetime.date.today())
-        t_type = f_col3.selectbox("收支類型", ["支出", "收入"])
+        t_date = f_col1.date_input("交易/入帳日期", datetime.date.today())
+        t_type = f_col2.selectbox("收支類型", ["支出", "收入"])
+        # 若為收入，扣款日自動與交易日相同；若是支出，可選延遲扣款日
+        t_pay_date = f_col3.date_input("實際扣款/生效日期", datetime.date.today(), help="收入項目將自動以此日期作為實際入帳日。")
         
         f_col4, f_col5, f_col6, f_col7 = st.columns(4)
         t_category = f_col4.selectbox("分類名稱", all_available_categories)
         t_amount = f_col5.number_input("金額 (NTD)", min_value=1, value=100, step=50)
-        t_account = f_col6.selectbox("支付/入帳帳戶", user_accounts_list if user_accounts_list else ["預設帳戶"])
+        t_account = f_col6.selectbox("入帳/扣款帳戶", user_accounts_list if user_accounts_list else ["預設帳戶"])
         t_note = f_col7.text_input("備註（選填）", "")
         
         submit_btn = st.form_submit_button("➕ 欄位無誤，獨立新增紀錄")
         
         if submit_btn:
+            actual_pay_date = t_date if t_type == "收入" else t_pay_date
             new_record = pd.DataFrame([{
                 "user_id": current_user,
                 "日期": pd.to_datetime(t_date),
-                "實際扣款日": pd.to_datetime(t_pay_date),
+                "實際扣款日": pd.to_datetime(actual_pay_date),
                 "收支類型": t_type,
                 "分類名稱": t_category,
                 "金額": t_amount,
@@ -655,17 +659,24 @@ with tab2:
             df_editor_input = pd.DataFrame(columns=trans_display_cols)
         else:
             df_editor_input = df_user_trans[trans_display_cols].copy()
+            # 💡 關鍵修復：收入若扣款日空白自動補齊交易日，並轉為乾淨的 datetime.date
+            df_editor_input['實際扣款日'] = df_editor_input['實際扣款日'].replace("", None).fillna(df_editor_input['日期'])
+            df_editor_input['日期'] = pd.to_datetime(df_editor_input['日期'], errors='coerce').dt.date
+            df_editor_input['實際扣款日'] = pd.to_datetime(df_editor_input['實際扣款日'], errors='coerce').dt.date
+            df_editor_input['日期'] = df_editor_input['日期'].fillna(datetime.date.today())
+            df_editor_input['實際扣款日'] = df_editor_input['實際扣款日'].fillna(df_editor_input['日期'])
+            df_editor_input['金額'] = pd.to_numeric(df_editor_input['金額'], errors='coerce').fillna(0)
 
         edited_user_trans = st.data_editor(
             df_editor_input,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "日期": st.column_config.DateColumn("消費日期", format="YYYY-MM-DD"),
-                "實際扣款日": st.column_config.DateColumn("實際扣款日", format="YYYY-MM-DD"),
+                "日期": st.column_config.DateColumn("交易/入帳日", format="YYYY-MM-DD"),
+                "實際扣款日": st.column_config.DateColumn("實際扣款/生效日", format="YYYY-MM-DD"),
                 "收支類型": st.column_config.SelectboxColumn("收支類型", options=["支出", "收入"]),
                 "分類名稱": st.column_config.SelectboxColumn("分類名稱", options=all_available_categories),
-                "支付帳戶": st.column_config.SelectboxColumn("支付帳戶", options=user_accounts_list if user_accounts_list else ["預設帳戶"]),
+                "支付帳戶": st.column_config.SelectboxColumn("入帳/支付帳戶", options=user_accounts_list if user_accounts_list else ["預設帳戶"]),
                 "金額": st.column_config.NumberColumn("金額 (NTD)", min_value=0, format="$%d")
             }
         )
@@ -739,6 +750,9 @@ with tab3:
             df_goals_input = pd.DataFrame(columns=goals_display_cols)
         else:
             df_goals_input = df_user_goals[goals_display_cols].copy()
+            df_goals_input['預計完成日期'] = pd.to_datetime(df_goals_input['預計完成日期'], errors='coerce').dt.date.fillna(datetime.date.today())
+            df_goals_input['目標金額'] = pd.to_numeric(df_goals_input['目標金額'], errors='coerce').fillna(0)
+            df_goals_input['當前累積金額'] = pd.to_numeric(df_goals_input['當前累積金額'], errors='coerce').fillna(0)
 
         edited_user_goals = st.data_editor(
             df_goals_input,
