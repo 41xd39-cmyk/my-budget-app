@@ -357,7 +357,7 @@ if df_user_budget.empty:
     df_user_budget = pd.DataFrame({
         "user_id": [current_user]*len(default_categories),
         "分類名稱": default_categories,
-        "預算金額": [15000, 3000, 1000, 10000, 3000, 4000, 5000],
+        "預算金額": [11000, 3000, 1000, 10000, 3000, 4000, 5000],
         "支出類型": ["固定", "固定", "固定", "變動", "變動", "變動", "變動"],
         "每月扣款日": [5, 25, 10, "", "", "", ""]
     })
